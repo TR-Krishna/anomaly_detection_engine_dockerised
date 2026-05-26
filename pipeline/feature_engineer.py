@@ -1,23 +1,21 @@
 """
 pipeline/feature_engineer.py
 -----------------------------
-Computes the full fixed feature vector from:
-  1. A canonical dict for the current reading
-  2. A list of past readings for this meter (from DB)
+Computes derived features from a canonical dict + DB history.
 
-This module mirrors exactly what training/train.py does during
-training, so the feature vector is always consistent.
+Energy consumption is NOT required. Every feature degrades
+gracefully if a parameter is absent:
+  - Energy absent  → delta, rolling_mean, z_score, spike_ratio,
+                      historical_avg_* all become None
+  - Voltage absent → voltage_deviation becomes None
+  - Current absent → current_delta becomes None
+  - PF absent      → power_factor_deviation becomes None
 
-Input:
-    canonical      : dict  — current reading (canonical feature names)
-    interval_ts    : str   — current interval timestamp
-    history        : list  — last N readings from meter_telemetry
-                             each item: {"interval_timestamp": ..., "raw_data": dict}
+Time features (hour_of_day, day_of_week, is_weekend, holiday)
+are always computed from the interval timestamp.
 
-Output:
-    dict — fixed feature vector with all ALL_FEATURES keys.
-           Missing optional features are set to None (will be
-           imputed by the IF detector using training medians).
+The primary series for rolling stats uses whatever is available,
+in priority order: energy_consumption → current → voltage.
 """
 
 import logging
@@ -28,201 +26,25 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from config.settings import ALL_FEATURES, OPTIONAL_FEATURES
+from config.settings import ALL_FEATURES
 
 logger = logging.getLogger(__name__)
 
-# Nominal voltage for deviation calculation
-NOMINAL_VOLTAGE = 230.0
+NOMINAL_VOLTAGE  = 230.0
+ROLLING_WINDOW   = 5
 
-# Rolling window size for local statistics
-ROLLING_WINDOW = 5
+# Priority order for the "primary series" used in rolling stats.
+# The first key present in the canonical dict wins.
+PRIMARY_SERIES_PRIORITY = [
+    "energy_consumption",
+    "current",
+    "voltage",
+]
 
 
 def _is_holiday(dt: datetime) -> int:
-    """Sunday = holiday proxy (matches training logic)."""
     return 1 if dt.weekday() == 6 else 0
 
-
-def _extract_energy_series(history: list[dict], current_energy: float) -> list[float]:
-    """
-    Builds an energy series from history + current reading.
-    history items must have raw_data with 'energy_consumption'.
-    Missing values in history are forward-filled with the last
-    known value — avoids NaN propagation in rolling stats.
-    """
-    series = []
-    last_known = None
-
-    for h in history:
-        raw = h.get("raw_data", {})
-        # raw_data from DB is already a canonical dict
-        val = raw.get("energy_consumption")
-        if val is not None:
-            try:
-                series.append(float(val))
-                last_known = float(val)
-            except (TypeError, ValueError):
-                if last_known is not None:
-                    series.append(last_known)
-        else:
-            if last_known is not None:
-                series.append(last_known)
-
-    series.append(current_energy)
-    return series
-
-
-def compute_features(
-    canonical: dict,
-    interval_ts: str,
-    history: list[dict],
-) -> dict:
-    """
-    Computes the full feature vector for one reading.
-
-    Parameters
-    ----------
-    canonical    : canonical feature dict for the current reading
-                   e.g. {"energy_consumption": 1.6, "voltage": 230.1, ...}
-    interval_ts  : ISO timestamp string of the current reading
-    history      : list of past readings (oldest → newest),
-                   each with {"interval_timestamp": ..., "raw_data": dict}
-                   raw_data keys are canonical names (as stored in DB).
-
-    Returns
-    -------
-    dict with ALL_FEATURES keys. Optional features absent from
-    canonical are set to None (imputed downstream).
-    """
-
-    # ── Parse timestamp ───────────────────────────────────
-    try:
-        dt = datetime.fromisoformat(str(interval_ts))
-    except Exception as e:
-        logger.warning(f"Cannot parse interval_timestamp '{interval_ts}': {e}. Using now().")
-        dt = datetime.utcnow()
-
-    # ── Core electrical value ─────────────────────────────
-    energy = canonical.get("energy_consumption")
-    if energy is None:
-        logger.error("energy_consumption missing from canonical dict — cannot compute features.")
-        raise ValueError("energy_consumption is required but missing from canonical dict.")
-    energy = float(energy)
-
-    # ── Time features ─────────────────────────────────────
-    hour_of_day = dt.hour
-    day_of_week = dt.weekday()
-    is_weekend  = 1 if day_of_week >= 5 else 0
-    holiday     = _is_holiday(dt)
-
-    # ── Build energy series (history + current) ───────────
-    energy_series = _extract_energy_series(history, energy)
-    n = len(energy_series)
-
-    # ── Delta (change from previous reading) ──────────────
-    if n >= 2:
-        delta = energy - energy_series[-2]
-    else:
-        delta = 0.0
-
-    # ── Rolling stats over last ROLLING_WINDOW values ─────
-    window = energy_series[-ROLLING_WINDOW:]
-    rolling_mean = float(np.mean(window))
-    rolling_std  = float(np.std(window)) if len(window) > 1 else 0.0
-
-    # ── Z-score ───────────────────────────────────────────
-    z_score = (energy - rolling_mean) / (rolling_std + 1e-5)
-
-    # ── Spike ratio ───────────────────────────────────────
-    spike_ratio = energy / (rolling_mean + 1e-5)
-
-    # ── Historical averages from past readings ────────────
-    # Same-hour average
-    same_hour_values = [
-        float(h["raw_data"]["energy_consumption"])
-        for h in history
-        if (
-            h.get("raw_data", {}).get("energy_consumption") is not None
-            and _parse_hour(h.get("interval_timestamp")) == hour_of_day
-        )
-    ]
-    historical_avg_same_hour = (
-        float(np.mean(same_hour_values)) if same_hour_values else energy
-    )
-
-    # Same-day-type average (weekday vs weekend)
-    same_day_type_values = [
-        float(h["raw_data"]["energy_consumption"])
-        for h in history
-        if (
-            h.get("raw_data", {}).get("energy_consumption") is not None
-            and _parse_is_weekend(h.get("interval_timestamp")) == is_weekend
-        )
-    ]
-    historical_avg_same_day_type = (
-        float(np.mean(same_day_type_values)) if same_day_type_values else energy
-    )
-
-    # ── Optional electrical features ─────────────────────
-
-    voltage = _optional_float(canonical, "voltage")
-    current = _optional_float(canonical, "current")
-    pf      = _optional_float(canonical, "power_factor")
-    app_e   = _optional_float(canonical, "apparent_import_energy")
-
-    # Current delta
-    current_delta = None
-    if current is not None:
-        prev_current = _last_canonical_value(history, "current")
-        if prev_current is not None:
-            current_delta = current - prev_current
-
-    # Voltage deviation from nominal
-    voltage_deviation = (voltage - NOMINAL_VOLTAGE) if voltage is not None else None
-
-    # Power factor deviation from ideal (1.0)
-    power_factor_deviation = (1.0 - pf) if pf is not None else None
-
-    # ── Assemble feature vector ───────────────────────────
-    features = {
-        # Core
-        "energy_consumption":         round(energy, 4),
-        "hour_of_day":                hour_of_day,
-        "day_of_week":                day_of_week,
-        "is_weekend":                 is_weekend,
-        "holiday":                    holiday,
-        "delta":                      round(delta, 4),
-        "rolling_mean":               round(rolling_mean, 4),
-        "rolling_std":                round(rolling_std, 4),
-        "z_score":                    round(z_score, 4),
-        "spike_ratio":                round(spike_ratio, 4),
-        "historical_avg_same_hour":   round(historical_avg_same_hour, 4),
-        "historical_avg_same_day_type": round(historical_avg_same_day_type, 4),
-
-        # Optional (None if not available for this meter)
-        "voltage":                    _round_opt(voltage),
-        "current":                    _round_opt(current),
-        "power_factor":               _round_opt(pf),
-        "apparent_import_energy":     _round_opt(app_e),
-        "current_delta":              _round_opt(current_delta),
-        "voltage_deviation":          _round_opt(voltage_deviation),
-        "power_factor_deviation":     _round_opt(power_factor_deviation),
-    }
-
-    # Sanity check — ensure all expected keys are present
-    missing = [f for f in ALL_FEATURES if f not in features]
-    if missing:
-        logger.warning(f"Feature engineering produced missing keys: {missing}")
-        for m in missing:
-            features[m] = None
-
-    return features
-
-
-# =========================================================
-# INTERNAL HELPERS
-# =========================================================
 
 def _optional_float(d: dict, key: str) -> Optional[float]:
     val = d.get(key)
@@ -238,8 +60,25 @@ def _round_opt(val: Optional[float], ndigits: int = 4) -> Optional[float]:
     return round(val, ndigits) if val is not None else None
 
 
+def _parse_hour(ts_str) -> Optional[int]:
+    if not ts_str:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts_str)).hour
+    except Exception:
+        return None
+
+
+def _parse_is_weekend(ts_str) -> Optional[int]:
+    if not ts_str:
+        return None
+    try:
+        return 1 if datetime.fromisoformat(str(ts_str)).weekday() >= 5 else 0
+    except Exception:
+        return None
+
+
 def _last_canonical_value(history: list[dict], key: str) -> Optional[float]:
-    """Returns the most recent value of a canonical key from history."""
     for h in reversed(history):
         val = h.get("raw_data", {}).get(key)
         if val is not None:
@@ -250,19 +89,199 @@ def _last_canonical_value(history: list[dict], key: str) -> Optional[float]:
     return None
 
 
-def _parse_hour(ts_str: Optional[str]) -> Optional[int]:
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(str(ts_str)).hour
-    except Exception:
-        return None
+def _build_series(history: list[dict], key: str, current_val: float) -> list[float]:
+    """
+    Builds a time series for `key` from history + current value.
+    Missing history values are forward-filled with the last known.
+    """
+    series = []
+    last_known = None
+    for h in history:
+        val = h.get("raw_data", {}).get(key)
+        if val is not None:
+            try:
+                v = float(val)
+                series.append(v)
+                last_known = v
+            except (TypeError, ValueError):
+                if last_known is not None:
+                    series.append(last_known)
+        else:
+            if last_known is not None:
+                series.append(last_known)
+    series.append(current_val)
+    return series
 
 
-def _parse_is_weekend(ts_str: Optional[str]) -> Optional[int]:
-    if not ts_str:
-        return None
+def _rolling_features(series: list[float], current_val: float):
+    """
+    Computes rolling_mean, rolling_std, z_score, spike_ratio, delta
+    from a series (oldest → newest, current value is last).
+    Returns a tuple of (delta, rolling_mean, rolling_std, z_score, spike_ratio).
+    """
+    n = len(series)
+    delta = (current_val - series[-2]) if n >= 2 else 0.0
+
+    window       = series[-ROLLING_WINDOW:]
+    rolling_mean = float(np.mean(window))
+    rolling_std  = float(np.std(window)) if len(window) > 1 else 0.0
+    z_score      = (current_val - rolling_mean) / (rolling_std + 1e-5)
+    spike_ratio  = current_val / (rolling_mean + 1e-5)
+
+    return delta, rolling_mean, rolling_std, z_score, spike_ratio
+
+
+def compute_features(
+    canonical: dict,
+    interval_ts: str,
+    history: list[dict],
+) -> dict:
+    """
+    Computes the full feature vector for one reading.
+
+    Parameters
+    ----------
+    canonical    : canonical feature dict for the current reading.
+                   energy_consumption is NOT required.
+    interval_ts  : ISO timestamp string of the current reading.
+    history      : list of past readings (oldest → newest),
+                   each with {"interval_timestamp": ..., "raw_data": dict}.
+
+    Returns
+    -------
+    dict with ALL_FEATURES keys. Features that cannot be computed
+    due to missing parameters are set to None.
+    """
+
+    # ── Parse timestamp ───────────────────────────────────
     try:
-        return 1 if datetime.fromisoformat(str(ts_str)).weekday() >= 5 else 0
-    except Exception:
-        return None
+        dt = datetime.fromisoformat(str(interval_ts))
+    except Exception as e:
+        logger.warning(f"Cannot parse interval_timestamp '{interval_ts}': {e}. Using utcnow().")
+        dt = datetime.utcnow()
+
+    # ── Time features (always available) ─────────────────
+    hour_of_day = dt.hour
+    day_of_week = dt.weekday()
+    is_weekend  = 1 if day_of_week >= 5 else 0
+    holiday     = _is_holiday(dt)
+
+    # ── Raw electrical values ─────────────────────────────
+    energy  = _optional_float(canonical, "energy_consumption")
+    voltage = _optional_float(canonical, "voltage")
+    current = _optional_float(canonical, "current")
+    pf      = _optional_float(canonical, "power_factor")
+    app_e   = _optional_float(canonical, "apparent_import_energy")
+
+    # ── Determine primary series for rolling stats ────────
+    # Use the first available parameter in priority order.
+    primary_key = None
+    primary_val = None
+    for key in PRIMARY_SERIES_PRIORITY:
+        val = _optional_float(canonical, key)
+        if val is not None:
+            primary_key = key
+            primary_val = val
+            break
+
+    # ── Rolling features ──────────────────────────────────
+    delta = rolling_mean = rolling_std = z_score = spike_ratio = None
+
+    if primary_val is not None:
+        series = _build_series(history, primary_key, primary_val)
+        delta, rolling_mean, rolling_std, z_score, spike_ratio = _rolling_features(
+            series, primary_val
+        )
+        if primary_key != "energy_consumption":
+            # If rolling stats are based on a non-energy primary,
+            # still log so it's traceable
+            logger.debug(
+                f"Rolling stats computed from '{primary_key}' "
+                f"(energy_consumption unavailable)."
+            )
+
+    # ── Energy-specific rolling features ─────────────────
+    # delta/rolling_mean/z_score/spike_ratio computed above use
+    # primary series. When energy IS the primary, they are energy-based.
+    # When energy is absent, they reflect the available primary (current/voltage).
+
+    # ── Historical averages ───────────────────────────────
+    # Computed from energy when available, else from primary series.
+    hist_key = "energy_consumption" if energy is not None else primary_key
+
+    historical_avg_same_hour     = None
+    historical_avg_same_day_type = None
+
+    if hist_key is not None:
+        same_hour_vals = [
+            float(h["raw_data"][hist_key])
+            for h in history
+            if (
+                h.get("raw_data", {}).get(hist_key) is not None
+                and _parse_hour(h.get("interval_timestamp")) == hour_of_day
+            )
+        ]
+        same_day_type_vals = [
+            float(h["raw_data"][hist_key])
+            for h in history
+            if (
+                h.get("raw_data", {}).get(hist_key) is not None
+                and _parse_is_weekend(h.get("interval_timestamp")) == is_weekend
+            )
+        ]
+        ref_val = _optional_float(canonical, hist_key) or 0.0
+        historical_avg_same_hour = (
+            float(np.mean(same_hour_vals)) if same_hour_vals else ref_val
+        )
+        historical_avg_same_day_type = (
+            float(np.mean(same_day_type_vals)) if same_day_type_vals else ref_val
+        )
+
+    # ── Optional derived features ─────────────────────────
+    current_delta = None
+    if current is not None:
+        prev_current = _last_canonical_value(history, "current")
+        if prev_current is not None:
+            current_delta = current - prev_current
+
+    voltage_deviation      = (voltage - NOMINAL_VOLTAGE) if voltage is not None else None
+    power_factor_deviation = (1.0 - pf)                  if pf      is not None else None
+
+    # ── Assemble ──────────────────────────────────────────
+    features = {
+        "energy_consumption":           _round_opt(energy),
+        "hour_of_day":                  hour_of_day,
+        "day_of_week":                  day_of_week,
+        "is_weekend":                   is_weekend,
+        "holiday":                      holiday,
+        "delta":                        _round_opt(delta),
+        "rolling_mean":                 _round_opt(rolling_mean),
+        "rolling_std":                  _round_opt(rolling_std),
+        "z_score":                      _round_opt(z_score),
+        "spike_ratio":                  _round_opt(spike_ratio),
+        "historical_avg_same_hour":     _round_opt(historical_avg_same_hour),
+        "historical_avg_same_day_type": _round_opt(historical_avg_same_day_type),
+        "voltage":                      _round_opt(voltage),
+        "current":                      _round_opt(current),
+        "power_factor":                 _round_opt(pf),
+        "apparent_import_energy":       _round_opt(app_e),
+        "current_delta":                _round_opt(current_delta),
+        "voltage_deviation":            _round_opt(voltage_deviation),
+        "power_factor_deviation":       _round_opt(power_factor_deviation),
+    }
+
+    # Ensure all ALL_FEATURES keys are present (None for missing)
+    for f in ALL_FEATURES:
+        if f not in features:
+            features[f] = None
+
+    return features
+
+
+def get_present_canonical_features(canonical: dict) -> frozenset:
+    """
+    Returns the frozenset of canonical feature names that are
+    actually present (non-None) in the canonical dict.
+    Used by if_detector to route to the correct group model.
+    """
+    return frozenset(k for k, v in canonical.items() if v is not None)

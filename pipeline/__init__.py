@@ -1,27 +1,9 @@
 """
 pipeline/__init__.py
 ---------------------
-Orchestrates the full detection pipeline end to end:
-
-  Raw API record
-      ↓
-  obis_parser       — parse rawValue pipe-string
-      ↓
-  canonical_mapper  — OBIS codes → canonical feature names
-      ↓
-  feature_engineer  — compute derived features (using DB history)
-      ↓
-  rule_based        — deterministic rule checks
-      ↓
-  zscore_detector   — statistical threshold checks
-      ↓
-  isolation_forest  — ML anomaly detection
-      ↓
-  PipelineResult    — combined output
-
-Public API:
-    from pipeline import run
-    result = run(api_record, history)
+Orchestrates the full detection pipeline end to end.
+Energy consumption is NOT required — pipeline continues with
+whatever canonical features are available.
 """
 
 import logging
@@ -40,22 +22,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PipelineResult:
-    # ── Identifiers ───────────────────────────────────────
     meter_serial:        str
     interval_timestamp:  str
-
-    # ── Overall verdict ───────────────────────────────────
     is_anomaly:          bool
-
-    # ── Per-layer results ─────────────────────────────────
-    rule_based:          dict         = field(default_factory=dict)
-    zscore:              dict         = field(default_factory=dict)
-    isolation_forest:    dict         = field(default_factory=dict)
-
-    # ── Feature snapshot (for anomaly_log) ────────────────
-    features:            dict         = field(default_factory=dict)
-
-    # ── Error (set if pipeline could not complete) ────────
+    rule_based:          dict          = field(default_factory=dict)
+    zscore:              dict          = field(default_factory=dict)
+    isolation_forest:    dict          = field(default_factory=dict)
+    features:            dict          = field(default_factory=dict)
     error:               Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -73,43 +46,12 @@ class PipelineResult:
         }
 
 
-def run(
-    api_record: dict,
-    history: list[dict],
-) -> PipelineResult:
+def run(api_record: dict, history: list[dict]) -> PipelineResult:
     """
     Runs the complete detection pipeline for one API record.
-
-    Parameters
-    ----------
-    api_record : dict
-        One record from the HES API, e.g.:
-        {
-            "id": 449618,
-            "meterSerial": "E0000002",
-            "timestamp": "2025-11-12T04:38:09.523241+00:00",
-            "obisCode": "1.0.99.1.0.255",
-            "entryId": 5,
-            "rawValue": "1,0.0.1.0.0.255,2,2025-11-12 10:00:00,|..."
-        }
-
-    history : list[dict]
-        Last N readings for this meter from meter_telemetry,
-        ordered oldest → newest. Each item:
-        {
-            "interval_timestamp": str,
-            "raw_data": dict          ← canonical feature names (from DB)
-        }
-        Pass an empty list for meters with no history yet.
-
-    Returns
-    -------
-    PipelineResult
-        Complete result with per-layer outputs and overall verdict.
-        On parse/processing error, returns a result with error set
-        and is_anomaly=False (do not flag what you cannot assess).
+    Energy consumption is not required; all features degrade
+    gracefully when parameters are absent.
     """
-
     meter_serial = api_record.get("meterSerial", "UNKNOWN")
 
     # ── Stage 1: Parse rawValue ────────────────────────────
@@ -129,14 +71,20 @@ def run(
     # ── Stage 2: Canonical mapping ────────────────────────
     canonical = map_to_canonical(parsed["readings"])
 
-    if "energy_consumption" not in canonical:
-        msg = "energy_consumption OBIS code not found in payload — cannot process."
+    if not canonical:
+        msg = "No recognisable OBIS codes in payload."
         logger.error(f"[{meter_serial}] {msg}")
         return PipelineResult(
             meter_serial=meter_serial,
             interval_timestamp=interval_ts,
             is_anomaly=False,
-            error=f"missing_energy: {msg}",
+            error=f"empty_canonical: {msg}",
+        )
+
+    if "energy_consumption" not in canonical:
+        logger.info(
+            f"[{meter_serial}] energy_consumption absent — continuing with: "
+            f"{list(canonical.keys())}"
         )
 
     # ── Stage 3: Feature engineering ──────────────────────
@@ -156,23 +104,19 @@ def run(
         )
 
     # ── Stage 4: Rule-based detection ─────────────────────
-    rule_result = rule_based.check(features)
+    rule_result   = rule_based.check(features)
 
     # ── Stage 5: Z-score detection ────────────────────────
     zscore_result = zscore_detector.check(features)
 
-    # ── Stage 6: Isolation Forest ─────────────────────────
+    # ── Stage 6: Isolation Forest (with group routing) ────
     try:
-        if_result = if_detector.check(features)
+        if_result = if_detector.check(features, canonical=canonical)
     except FileNotFoundError as e:
         logger.error(f"[{meter_serial}] IF model not loaded: {e}")
         if_result = None
 
     # ── Overall verdict ───────────────────────────────────
-    # A reading is anomalous if ANY layer flags it.
-    # This is intentionally conservative — the decision engine
-    # (Step 5 of the roadmap) will add confidence scoring and
-    # root cause analysis on top of this.
     is_anomaly = (
         rule_result.is_anomaly
         or zscore_result.is_anomaly
@@ -181,12 +125,11 @@ def run(
 
     if is_anomaly:
         layers_fired = []
-        if rule_result.is_anomaly:   layers_fired.append("rule_based")
-        if zscore_result.is_anomaly: layers_fired.append("zscore")
-        if if_result and if_result.is_anomaly: layers_fired.append("isolation_forest")
+        if rule_result.is_anomaly:                      layers_fired.append("rule_based")
+        if zscore_result.is_anomaly:                    layers_fired.append("zscore")
+        if if_result and if_result.is_anomaly:          layers_fired.append("isolation_forest")
         logger.info(
-            f"[{meter_serial}] ANOMALY at {interval_ts} | "
-            f"layers: {layers_fired}"
+            f"[{meter_serial}] ANOMALY at {interval_ts} | layers: {layers_fired}"
         )
 
     return PipelineResult(
@@ -195,6 +138,9 @@ def run(
         is_anomaly=is_anomaly,
         rule_based=rule_result.to_dict(),
         zscore=zscore_result.to_dict(),
-        isolation_forest=if_result.to_dict() if if_result else {"error": "model_not_loaded"},
+        isolation_forest=(
+            if_result.to_dict() if if_result
+            else {"error": "model_not_loaded"}
+        ),
         features=features,
     )
