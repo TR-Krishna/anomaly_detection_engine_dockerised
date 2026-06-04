@@ -170,35 +170,28 @@ def _engineer_features(grp: pd.DataFrame) -> pd.DataFrame:
 
 def _reconstruct_labels(df: pd.DataFrame) -> np.ndarray:
     """
-    Reconstructs pseudo ground-truth labels from the dataset.
-    Anomalies were injected as: spikes (energy * 3-8x) or negatives.
-
-    Heuristic:
-      - energy < 0                           → anomaly (injected negative)
-      - energy > 5 * meter's rolling_mean    → anomaly (injected spike)
-      - all other rows                       → normal
-
-    Returns array of 0=normal, 1=anomaly.
+    Reads exact ground-truth anomaly labels from the anomaly_type
+    column stored in raw_data by the dataset generator.
+    normal → 0, any anomaly type string → 1.
+    Falls back to zeros if column is absent (old dataset format).
     """
-    labels = np.zeros(len(df), dtype=int)
+    if "anomaly_type" not in df.columns:
+        print("        WARNING: anomaly_type column not found — using zero labels.")
+        return np.zeros(len(df), dtype=int)
+    return (df["anomaly_type"] != "normal").astype(int).values
 
-    if "energy_consumption" not in df.columns:
-        return labels
 
-    ec = df["energy_consumption"].values
-    rm = df["rolling_mean"].values if "rolling_mean" in df.columns else np.ones(len(df))
-
-    for i in range(len(df)):
-        e = ec[i]
-        r = rm[i] if rm[i] > 0 else 1.0
-        if pd.isna(e):
-            continue
-        if e < 0:
-            labels[i] = 1
-        elif r > 0 and e > 5 * r:
-            labels[i] = 1
-
-    return labels
+def _label_breakdown(df: pd.DataFrame, y: np.ndarray) -> None:
+    """Prints per-anomaly-type counts for a split."""
+    if "anomaly_type" not in df.columns:
+        return
+    from collections import Counter
+    counts = Counter(df["anomaly_type"].values)
+    total  = len(df)
+    print(f"        Anomaly type breakdown ({y.sum()} total anomalies):")
+    for atype, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+        marker = "  " if atype == "normal" else "* "
+        print(f"          {marker}{atype:<28} {cnt:>5}  ({100*cnt/total:.2f}%)")
 
 
 def _train_and_evaluate(
@@ -292,11 +285,15 @@ print(f"        {len(df_raw)} rows, {df_raw['meter_serial'].nunique()} meters")
 
 def parse_raw(s):
     raw = json.loads(s)
-    return {
-        OBIS_TO_CANONICAL.get(k, k): v
-        for k, v in raw.items()
-        if k != "0.0.1.0.0.255"
-    }
+    row = {}
+    for k, v in raw.items():
+        if k == "0.0.1.0.0.255":
+            continue
+        elif k == "anomaly_type":
+            row["anomaly_type"] = v          # preserve label as-is
+        else:
+            row[OBIS_TO_CANONICAL.get(k, k)] = v
+    return row
 
 parsed        = df_raw["raw_data"].apply(parse_raw)
 df_features   = pd.DataFrame(list(parsed))
@@ -309,10 +306,16 @@ df_features["interval_timestamp"] = df_raw["interval_timestamp"].values
 
 print("[ 2/5 ] Engineering features per meter ...")
 
+# Drop anomaly_type before engineering (it is a label, not a feature)
+df_features_eng = df_features.drop(columns=["anomaly_type"], errors="ignore")
+
 frames = []
-for meter, grp in df_features.groupby("meter_serial"):
+for meter, grp in df_features_eng.groupby("meter_serial"):
     frames.append(_engineer_features(grp))
 df_eng = pd.concat(frames, ignore_index=True)
+# Re-attach anomaly_type labels aligned by original index
+if "anomaly_type" in df_features.columns:
+    df_eng["anomaly_type"] = df_features["anomaly_type"].values
 print(f"        Engineered shape: {df_eng.shape}")
 
 # =========================================================
@@ -336,9 +339,10 @@ df_test  = df_eng[df_eng["meter_serial"].isin(test_meters)].copy()
 print(f"        Train: {len(df_train)} rows ({len(train_meters)} meters)")
 print(f"        Test : {len(df_test)}  rows ({len(test_meters)} meters)")
 
-# Reconstruct pseudo-labels for test set evaluation
+# Extract exact labels from anomaly_type column
 y_test_all = _reconstruct_labels(df_test)
 print(f"        Test anomaly labels: {y_test_all.sum()} / {len(y_test_all)}")
+_label_breakdown(df_test, y_test_all)
 
 # =========================================================
 # STEP 4 — TRAIN PER-GROUP MODELS
