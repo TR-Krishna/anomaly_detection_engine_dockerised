@@ -1,2 +1,10 @@
 models
 dynamic_meter_anomaly_dataset.csv
+__pycache__
+.env
+-d
+-H
+Test_Dataset
+dataset/Meter Management - EcoSEnter.xlsx
+dataset/fetch_meter_data.py
+meter_data_report.csv
