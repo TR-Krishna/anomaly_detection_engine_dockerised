@@ -33,9 +33,10 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Optional
 
 import joblib
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from api.schemas import (
@@ -46,10 +47,12 @@ from api.schemas import (
     RuleLayerResult,
     ZScoreLayerResult,
     IFLayerResult,
+    AnomalyExplanationResponse,
 )
-from config.settings import MODEL_PATHS, ROLLING_WINDOW_SIZE
+from config.settings import MODEL_PATHS, ROLLING_WINDOW_SIZE, DECISION_ENGINE_CONFIG
 from pipeline import run as run_pipeline
 from pipeline.if_detector import reload_artifacts
+from decision_engine.service import run_explanation_task
 
 # --------------- logging ----------------------------------
 logging.basicConfig(
@@ -71,6 +74,7 @@ try:
         insert_raw_reading,
         insert_telemetry,
         insert_anomaly,
+        get_anomaly_by_id,
         close_pool,
     )
     _DB_AVAILABLE = True
@@ -155,14 +159,21 @@ def _fetch_history(meter_serial: str, before_timestamp: str) -> list[dict]:
         return []
 
 
-def _persist(record, parsed_interval_ts: str, result) -> None:
+def _persist(record, parsed_interval_ts: str, result) -> Optional[int]:
     """
     Writes raw record, canonical telemetry, and anomaly log
     to DB. Errors are logged but never bubble up to the caller —
     persistence failures must not affect detection responses.
+
+    Returns
+    -------
+    anomaly_log.id if an anomaly was logged, else None.
+    Used by the caller to schedule a decision-engine background task.
     """
     if not _DB_AVAILABLE:
-        return
+        return None
+
+    anomaly_id = None
 
     try:
         # 1. Raw record
@@ -177,8 +188,6 @@ def _persist(record, parsed_interval_ts: str, result) -> None:
 
         # 2. Parsed telemetry — store canonical dict in raw_data
         if result.features and not result.error:
-            # Extract only the canonical electrical values
-            # (not derived features — those are recomputed at inference)
             canonical_fields = [
                 "energy_consumption", "voltage", "current", "power_factor",
                 "apparent_import_energy", "active_export_energy",
@@ -204,7 +213,11 @@ def _persist(record, parsed_interval_ts: str, result) -> None:
             zs = result.zscore
             if_r = result.isolation_forest
 
-            insert_anomaly(
+            explanation_status = (
+                "pending" if DECISION_ENGINE_CONFIG["enabled"] else None
+            )
+
+            anomaly_id = insert_anomaly(
                 meter_serial=record.meterSerial,
                 interval_timestamp=parsed_interval_ts,
                 rule_based_flag=rb.get("is_anomaly", False),
@@ -214,13 +227,18 @@ def _persist(record, parsed_interval_ts: str, result) -> None:
                 zscore_value=zs.get("z_score"),
                 rule_violations=rb.get("violations"),
                 feature_snapshot=result.features,
+                explanation_status=explanation_status,
             )
 
     except Exception as e:
         logger.error(f"DB persistence failed for record {record.id}: {e}")
 
+    return anomaly_id
 
-def _build_response(result) -> DetectResponse:
+def _build_response(
+    result,
+    anomaly_id: Optional[int] = None,
+) -> DetectResponse:
     """Converts a PipelineResult into a DetectResponse."""
 
     if result.error:
@@ -255,8 +273,16 @@ def _build_response(result) -> DetectResponse:
             is_anomaly=if_r.get("is_anomaly", False),
             anomaly_score=if_r.get("anomaly_score"),
             prediction=if_r.get("prediction"),
+            model_used=if_r.get("model_used"),
+            features_used=if_r.get("features_used"),
         ),
     )
+
+    explanation_status = None
+    if result.is_anomaly and anomaly_id is not None:
+        explanation_status = (
+            "pending" if DECISION_ENGINE_CONFIG["enabled"] else None
+        )
 
     return DetectResponse(
         meter_serial=result.meter_serial,
@@ -265,8 +291,9 @@ def _build_response(result) -> DetectResponse:
         layers=layers,
         features=result.features,
         error=None,
+        anomaly_id=anomaly_id if result.is_anomaly else None,
+        explanation_status=explanation_status,
     )
-
 
 # =========================================================
 # ENDPOINTS
@@ -279,7 +306,10 @@ def _build_response(result) -> DetectResponse:
     summary="Run anomaly detection on one or more meter records",
     tags=["Detection"],
 )
-async def detect(request: DetectRequest) -> DetectBatchResponse:
+async def detect(
+    request: DetectRequest,
+    background_tasks: BackgroundTasks,
+) -> DetectBatchResponse:
     """
     Accepts a batch of raw HES API records and runs the full
     three-layer detection pipeline on each:
@@ -295,27 +325,53 @@ async def detect(request: DetectRequest) -> DetectBatchResponse:
     History for rolling features is fetched from the database
     per meter. If the DB is unavailable, the pipeline falls back
     to using the current reading only (reduced feature quality).
+
+    **Decision Engine**: if a record is flagged anomalous and the
+    decision engine is enabled, an LLM explanation is generated
+    asynchronously as a background task after this response is
+    returned. The response includes `anomaly_id` and
+    `explanation_status: "pending"` — poll
+    `GET /anomalies/{anomaly_id}/explanation` for the result.
     """
     responses = []
 
     for record in request.records:
-        # ── Fetch rolling history from DB ─────────────────
         history = _fetch_history(
             meter_serial=record.meterSerial,
             before_timestamp=record.timestamp,
         )
 
-        # ── Run pipeline ──────────────────────────────────
         result = run_pipeline(
             api_record=record.model_dump(),
             history=history,
         )
 
-        # ── Persist to DB ─────────────────────────────────
-        _persist(record, result.interval_timestamp, result)
+        anomaly_id = _persist(record, result.interval_timestamp, result)
 
-        # ── Build response ────────────────────────────────
-        responses.append(_build_response(result))
+        if (
+            result.is_anomaly
+            and anomaly_id is not None
+            and DECISION_ENGINE_CONFIG["enabled"]
+            and not result.error
+        ):
+            rb   = result.rule_based
+            zs   = result.zscore
+            if_r = result.isolation_forest
+
+            background_tasks.add_task(
+                run_explanation_task,
+                anomaly_id=anomaly_id,
+                meter_serial=result.meter_serial,
+                interval_timestamp=result.interval_timestamp,
+                features=result.features,
+                rule_violations=rb.get("violations", []),
+                zscore_value=zs.get("z_score"),
+                zscore_triggers=zs.get("triggers", []),
+                if_score=if_r.get("anomaly_score"),
+                if_model_used=if_r.get("model_used"),
+            )
+
+        responses.append(_build_response(result, anomaly_id=anomaly_id))
 
     n_anomalies = sum(1 for r in responses if r.is_anomaly)
 
@@ -417,3 +473,58 @@ async def model_reload() -> dict:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e),
         )
+    
+@app.get(
+    "/anomalies/{anomaly_id}/explanation",
+    response_model=AnomalyExplanationResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Fetch the Decision Engine explanation for a flagged anomaly",
+    tags=["Decision Engine"],
+)
+async def get_anomaly_explanation(anomaly_id: int) -> AnomalyExplanationResponse:
+    """
+    Fetches the LLM-generated explanation for a previously flagged
+    anomaly. Explanations are generated asynchronously after
+    POST /detect returns, so this endpoint may need to be polled.
+
+    `explanation_status` values:
+      - "pending"   — LLM call is queued or in progress; poll again shortly
+      - "completed" — `explanation` field is populated
+      - "failed"    — `explanation_error` describes what went wrong;
+                      the anomaly detection itself is still valid,
+                      only the explanation generation failed
+      - null        — decision engine was disabled when this anomaly
+                      was detected; no explanation will be generated
+
+    Typical polling interval: 2-5 seconds, depending on LLM provider
+    latency (local Ollama models typically take 3-15 seconds).
+    """
+    if not _DB_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database not available — explanations are not persisted without a DB.",
+        )
+
+    row = get_anomaly_by_id(anomaly_id)
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No anomaly found with id={anomaly_id}",
+        )
+
+    return AnomalyExplanationResponse(
+        anomaly_id=row["id"],
+        meter_serial=row["meter_serial"],
+        interval_timestamp=str(row["interval_timestamp"]),
+        explanation_status=row.get("explanation_status"),
+        explanation=row.get("explanation"),
+        explanation_generated_at=(
+            str(row["explanation_generated_at"])
+            if row.get("explanation_generated_at") else None
+        ),
+        explanation_error=row.get("explanation_error"),
+        rule_violations=row.get("rule_violations"),
+        zscore_value=row.get("zscore_value"),
+        if_score=row.get("if_score"),
+    )

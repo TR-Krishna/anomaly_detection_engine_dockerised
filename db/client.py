@@ -161,18 +161,32 @@ def insert_anomaly(
     zscore_value: Optional[float],
     rule_violations: Optional[list],
     feature_snapshot: Optional[dict],
-) -> None:
+    explanation_status: Optional[str] = None,
+) -> Optional[int]:
     """
     Writes a detected anomaly to anomaly_log.
+
+    Parameters
+    ----------
+    explanation_status : if set (e.g. "pending"), marks this anomaly
+                          as awaiting LLM explanation generation.
+                          Leave None if the decision engine is disabled.
+
+    Returns
+    -------
+    The new anomaly_log.id, or None if insert failed. Used by the API
+    layer to schedule a background explanation task for this row.
     """
     sql = """
         INSERT INTO anomaly_log (
             meter_serial, interval_timestamp,
             rule_based_flag, zscore_flag, if_flag,
             if_score, zscore_value,
-            rule_violations, feature_snapshot
+            rule_violations, feature_snapshot,
+            explanation_status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -186,8 +200,61 @@ def insert_anomaly(
                 zscore_value,
                 json.dumps(rule_violations) if rule_violations else None,
                 json.dumps(feature_snapshot) if feature_snapshot else None,
+                explanation_status,
+            ))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
+def update_anomaly_explanation(
+    anomaly_id: int,
+    explanation: Optional[dict],
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    """
+    Updates the explanation fields for an anomaly_log row.
+    Called by the decision engine background task after the
+    LLM call completes (successfully or not).
+    """
+    sql = """
+        UPDATE anomaly_log
+        SET explanation = %s,
+            explanation_status = %s,
+            explanation_generated_at = NOW(),
+            explanation_error = %s
+        WHERE id = %s;
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (
+                json.dumps(explanation) if explanation else None,
+                status,
+                error,
+                anomaly_id,
             ))
 
+
+def get_anomaly_by_id(anomaly_id: int) -> Optional[dict]:
+    """
+    Fetches a single anomaly_log row by id, including explanation
+    fields. Used by GET /anomalies/{id}/explanation.
+    """
+    sql = """
+        SELECT id, meter_serial, interval_timestamp,
+               rule_based_flag, zscore_flag, if_flag,
+               if_score, zscore_value, rule_violations, feature_snapshot,
+               detected_at,
+               explanation_status, explanation,
+               explanation_generated_at, explanation_error
+        FROM anomaly_log
+        WHERE id = %s;
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (anomaly_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 # =========================================================
 # READ HELPERS

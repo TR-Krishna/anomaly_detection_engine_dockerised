@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS anomaly_log (
 
     detected_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
+    -- Decision Engine (LLM explanation)
+    -- explanation_status: 'pending' | 'completed' | 'failed' | NULL (not requested)
+    explanation_status       VARCHAR(16),
+    -- Structured JSON output from the LLM:
+    --   { anomaly_explanation, supporting_factors,
+    --     possible_false_positive_scenarios, confidence, limitations,
+    --     llm_provider, llm_model }
+    explanation              JSONB,
+    explanation_generated_at TIMESTAMPTZ,
+    -- Error message if explanation generation failed
+    explanation_error        TEXT,
+
     CONSTRAINT fk_anomaly_telemetry
         FOREIGN KEY (meter_serial, interval_timestamp)
         REFERENCES meter_telemetry (meter_serial, interval_timestamp)
@@ -136,3 +148,8 @@ CREATE INDEX IF NOT EXISTS idx_anomaly_meter_serial
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_detected_at
     ON anomaly_log (detected_at DESC);
+
+-- Speeds up "find anomalies still awaiting explanation" queries
+CREATE INDEX IF NOT EXISTS idx_anomaly_explanation_status
+    ON anomaly_log (explanation_status)
+    WHERE explanation_status IS NOT NULL;

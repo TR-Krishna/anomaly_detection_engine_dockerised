@@ -78,6 +78,8 @@ class ZScoreLayerResult(LayerResult):
 class IFLayerResult(LayerResult):
     anomaly_score: Optional[float]
     prediction:    Optional[int]
+    model_used:    Optional[str] = None
+    features_used: Optional[list[str]] = None
 
 class DetectionLayers(BaseModel):
     rule_based:       RuleLayerResult
@@ -96,6 +98,13 @@ class DetectResponse(BaseModel):
     features:            Optional[dict]            = None
     error:               Optional[str]             = None
 
+    # ── Decision Engine ──────────────────────────────────
+    # Set when is_anomaly=True and the decision engine is enabled.
+    # The explanation itself is generated asynchronously — use
+    # anomaly_id to poll GET /anomalies/{id}/explanation.
+    anomaly_id:          Optional[int] = None
+    explanation_status:  Optional[str] = None
+
 
 class DetectBatchResponse(BaseModel):
     """
@@ -104,3 +113,25 @@ class DetectBatchResponse(BaseModel):
     total:      int
     anomalies:  int
     results:    list[DetectResponse]
+
+
+# =========================================================
+# DECISION ENGINE — explanation response
+# =========================================================
+
+class AnomalyExplanationResponse(BaseModel):
+    """
+    Response for GET /anomalies/{id}/explanation.
+    """
+    anomaly_id:               int
+    meter_serial:             str
+    interval_timestamp:       str
+    explanation_status:       Optional[str] = None   # pending | completed | failed | None
+    explanation:              Optional[dict] = None
+    explanation_generated_at: Optional[str] = None
+    explanation_error:        Optional[str] = None
+
+    # Echo back detection context for convenience
+    rule_violations:          Optional[list] = None
+    zscore_value:             Optional[float] = None
+    if_score:                 Optional[float] = None
