@@ -18,6 +18,7 @@ Output : ZScoreResult dataclass
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from time import perf_counter
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -70,6 +71,11 @@ def check(features: dict) -> ZScoreResult:
         triggers lists which checks fired.
         z_score and spike_ratio hold the actual values.
     """
+    started = perf_counter()
+    logger.info(
+        f"Z-score evaluation started with z_score={features.get('z_score')}, spike_ratio={features.get('spike_ratio')}."
+    )
+
     triggers = []
     details  = {}
 
@@ -119,6 +125,10 @@ def check(features: dict) -> ZScoreResult:
             )
 
     is_anomaly = len(triggers) > 0
+
+    logger.info(
+        f"Z-score evaluation finished in {(perf_counter() - started) * 1000:.1f} ms; anomaly={is_anomaly}, triggers={triggers}."
+    )
 
     return ZScoreResult(
         is_anomaly=is_anomaly,

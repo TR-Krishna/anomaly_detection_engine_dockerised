@@ -13,6 +13,7 @@ import json
 import logging
 from contextlib import contextmanager
 from typing import Optional
+from time import perf_counter
 
 import psycopg2
 from psycopg2 import pool
@@ -63,6 +64,7 @@ def get_connection():
     """
     conn = get_pool().getconn()
     try:
+        logger.debug("Database connection acquired from pool.")
         yield conn
         conn.commit()
     except Exception:
@@ -70,6 +72,7 @@ def get_connection():
         raise
     finally:
         get_pool().putconn(conn)
+        logger.debug("Database connection returned to pool.")
 
 
 # =========================================================
@@ -120,6 +123,9 @@ def insert_raw_reading(
                 id, meter_serial, received_at,
                 profile_obis_code, entry_id, raw_value,
             ))
+    logger.debug(
+        f"Inserted raw reading id={id} meter={meter_serial} profile={profile_obis_code}."
+    )
 
 
 def insert_telemetry(
@@ -149,6 +155,9 @@ def insert_telemetry(
                 received_at,
                 source_raw_id,
             ))
+    logger.debug(
+        f"Inserted telemetry for meter={meter_serial} interval_timestamp={interval_timestamp} source_raw_id={source_raw_id}."
+    )
 
 
 def insert_anomaly(
@@ -203,6 +212,9 @@ def insert_anomaly(
                 explanation_status,
             ))
             row = cur.fetchone()
+            logger.info(
+                f"Inserted anomaly log for meter={meter_serial} interval_timestamp={interval_timestamp}; explanation_status={explanation_status}."
+            )
             return row[0] if row else None
 
 
@@ -254,6 +266,7 @@ def get_anomaly_by_id(anomaly_id: int) -> Optional[dict]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, (anomaly_id,))
             row = cur.fetchone()
+            logger.debug(f"Fetched anomaly_log row for anomaly_id={anomaly_id}: {'found' if row else 'missing'}.")
             return dict(row) if row else None
 
 # =========================================================
@@ -308,6 +321,10 @@ def get_last_n_readings(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+
+    logger.debug(
+        f"Fetched {len(rows)} telemetry row(s) for meter={meter_serial} before_timestamp={before_timestamp}."
+    )
 
     # Reverse so result is oldest → newest
     rows = list(reversed(rows))

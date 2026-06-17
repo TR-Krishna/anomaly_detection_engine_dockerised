@@ -20,7 +20,11 @@ Design notes
 """
 
 import json
+import logging
 from decision_engine.schemas import AnomalyContext
+
+
+logger = logging.getLogger(__name__)
 
 
 SYSTEM_PROMPT = """You are an expert electrical grid analyst specializing in smart meter \
@@ -181,6 +185,13 @@ Based on the flagged reading, the computed features, the automated detection \
 results, and the historical pattern shown above, provide your analysis as a \
 JSON object with exactly the structure specified in the system prompt. \
 Reference specific numbers from the data above in your explanation."""
+
+    logger.info(
+        f"Built LLM prompt for anomaly_id={context.anomaly_id}: user_prompt_length={len(user_prompt)}, history_rows={len(context.history)}."
+    )
+    logger.debug(
+        f"LLM prompt preview for anomaly_id={context.anomaly_id}: {user_prompt[:500]}."
+    )
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},

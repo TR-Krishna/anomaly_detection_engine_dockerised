@@ -27,6 +27,7 @@ import logging
 import os
 import sys
 import warnings
+from time import perf_counter
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -60,6 +61,15 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("api.main")
+
+
+def _summarize_layer_flags(result) -> str:
+    flags = {
+        "rule_based": result.rule_based.get("is_anomaly") if result.rule_based else None,
+        "zscore": result.zscore.get("is_anomaly") if result.zscore else None,
+        "isolation_forest": result.isolation_forest.get("is_anomaly") if result.isolation_forest else None,
+    }
+    return ", ".join(f"{name}={value}" for name, value in flags.items())
 
 
 # =========================================================
@@ -333,20 +343,40 @@ async def detect(
     `explanation_status: "pending"` — poll
     `GET /anomalies/{anomaly_id}/explanation` for the result.
     """
+    batch_started = perf_counter()
+    logger.info(f"/detect received {len(request.records)} record(s).")
+
     responses = []
 
-    for record in request.records:
+    for index, record in enumerate(request.records, start=1):
+        record_started = perf_counter()
+        logger.info(
+            f"[{index}/{len(request.records)}] Processing record id={record.id} meter={record.meterSerial} entry={record.entryId}."
+        )
+
+        history_started = perf_counter()
         history = _fetch_history(
             meter_serial=record.meterSerial,
             before_timestamp=record.timestamp,
         )
+        logger.info(
+            f"[{record.meterSerial}] Retrieved {len(history)} historical reading(s) in {(perf_counter() - history_started) * 1000:.1f} ms."
+        )
 
+        pipeline_started = perf_counter()
         result = run_pipeline(
             api_record=record.model_dump(),
             history=history,
         )
+        logger.info(
+            f"[{record.meterSerial}] Pipeline completed in {(perf_counter() - pipeline_started) * 1000:.1f} ms; anomaly={result.is_anomaly}, error={result.error!r}."
+        )
 
+        persist_started = perf_counter()
         anomaly_id = _persist(record, result.interval_timestamp, result)
+        logger.info(
+            f"[{record.meterSerial}] Persistence finished in {(perf_counter() - persist_started) * 1000:.1f} ms; anomaly_id={anomaly_id}."
+        )
 
         if (
             result.is_anomaly
@@ -370,10 +400,20 @@ async def detect(
                 if_score=if_r.get("anomaly_score"),
                 if_model_used=if_r.get("model_used"),
             )
+            logger.info(
+                f"[{record.meterSerial}] Scheduled Decision Engine explanation task for anomaly_id={anomaly_id}."
+            )
+
+        logger.info(
+            f"[{record.meterSerial}] Record finished in {(perf_counter() - record_started) * 1000:.1f} ms; layers={_summarize_layer_flags(result)}."
+        )
 
         responses.append(_build_response(result, anomaly_id=anomaly_id))
 
     n_anomalies = sum(1 for r in responses if r.is_anomaly)
+    logger.info(
+        f"/detect completed in {(perf_counter() - batch_started) * 1000:.1f} ms with {n_anomalies}/{len(responses)} anomaly result(s)."
+    )
 
     return DetectBatchResponse(
         total=len(responses),
@@ -397,6 +437,7 @@ async def health() -> dict:
         os.path.exists(os.path.abspath(p))
         for p in MODEL_PATHS.values()
     )
+    logger.info(f"/health checked model artifacts -> {'ok' if models_ok else 'missing'}.")
 
     # Check DB
     db_ok = False
@@ -433,12 +474,16 @@ async def model_info() -> dict:
     """
     schema_path = os.path.abspath(MODEL_PATHS["feature_schema"])
     if not os.path.exists(schema_path):
+        logger.warning("/model/info requested but feature schema artifact is missing.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Model artifacts not found. Run training/train.py first.",
         )
 
     schema = joblib.load(schema_path)
+    logger.info(
+        f"/model/info returned feature schema with {len(schema) if hasattr(schema, '__len__') else 'unknown'} item(s)."
+    )
 
     from config.settings import DETECTION_CONFIG, ROLLING_WINDOW_SIZE
     return {
@@ -462,6 +507,7 @@ async def model_reload() -> dict:
     the service. Call this after retraining.
     """
     try:
+        logger.info("/model/reload requested.")
         reload_artifacts()
         return {
             "status":  "reloaded",
@@ -500,12 +546,16 @@ async def get_anomaly_explanation(anomaly_id: int) -> AnomalyExplanationResponse
     latency (local Ollama models typically take 3-15 seconds).
     """
     if not _DB_AVAILABLE:
+        logger.warning(f"/anomalies/{anomaly_id}/explanation requested but DB is unavailable.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Database not available — explanations are not persisted without a DB.",
         )
 
     row = get_anomaly_by_id(anomaly_id)
+    logger.info(
+        f"Fetched explanation row for anomaly_id={anomaly_id}: {'found' if row else 'not found'}."
+    )
 
     if row is None:
         raise HTTPException(

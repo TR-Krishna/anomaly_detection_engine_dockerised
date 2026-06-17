@@ -22,6 +22,7 @@ import logging
 import numpy as np
 from datetime import datetime
 from typing import Optional
+from time import perf_counter
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -153,12 +154,18 @@ def compute_features(
     due to missing parameters are set to None.
     """
 
+    started = perf_counter()
+    logger.info(
+        f"Feature engineering started with canonical_keys={list(canonical.keys())} and history_len={len(history)}."
+    )
+
     # ── Parse timestamp ───────────────────────────────────
     try:
         dt = datetime.fromisoformat(str(interval_ts))
     except Exception as e:
         logger.warning(f"Cannot parse interval_timestamp '{interval_ts}': {e}. Using utcnow().")
         dt = datetime.utcnow()
+    logger.debug(f"Parsed interval timestamp '{interval_ts}' -> {dt.isoformat()}.")
 
     # ── Time features (always available) ─────────────────
     hour_of_day = dt.hour
@@ -183,6 +190,9 @@ def compute_features(
             primary_key = key
             primary_val = val
             break
+    logger.info(
+        f"Primary rolling series resolved to '{primary_key}' with value={primary_val}."
+    )
 
     # ── Rolling features ──────────────────────────────────
     delta = rolling_mean = rolling_std = z_score = spike_ratio = None
@@ -199,6 +209,9 @@ def compute_features(
                 f"Rolling stats computed from '{primary_key}' "
                 f"(energy_consumption unavailable)."
             )
+        logger.info(
+            f"Rolling features computed from '{primary_key}': delta={_round_opt(delta)}, mean={_round_opt(rolling_mean)}, std={_round_opt(rolling_std)}, z_score={_round_opt(z_score)}, spike_ratio={_round_opt(spike_ratio)}."
+        )
 
     # ── Energy-specific rolling features ─────────────────
     # delta/rolling_mean/z_score/spike_ratio computed above use
@@ -235,6 +248,9 @@ def compute_features(
         )
         historical_avg_same_day_type = (
             float(np.mean(same_day_type_vals)) if same_day_type_vals else ref_val
+        )
+        logger.info(
+            f"Historical averages computed from '{hist_key}': same_hour={_round_opt(historical_avg_same_hour)}, same_day_type={_round_opt(historical_avg_same_day_type)}."
         )
 
     # ── Optional derived features ─────────────────────────
@@ -274,6 +290,12 @@ def compute_features(
     for f in ALL_FEATURES:
         if f not in features:
             features[f] = None
+
+    non_null_count = sum(1 for v in features.values() if v is not None)
+    logger.info(
+        f"Feature engineering finished in {(perf_counter() - started) * 1000:.1f} ms; produced {non_null_count}/{len(features)} non-null feature(s)."
+    )
+    logger.debug(f"Final feature vector: {features}")
 
     return features
 

@@ -27,6 +27,7 @@ in the feature matrix and be imputed.
 import logging
 import sys
 import os
+from time import perf_counter
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from config.settings import OBIS_REGISTRY
@@ -70,6 +71,8 @@ def map_to_canonical(readings: dict) -> dict:
         Unknown OBIS codes are skipped with a one-time warning.
     """
     canonical = {}
+    started = perf_counter()
+    logger.info(f"Canonical mapping started for {len(readings)} OBIS reading(s).")
 
     for obis_code, payload in readings.items():
 
@@ -101,6 +104,10 @@ def map_to_canonical(readings: dict) -> dict:
             continue
 
         canonical[canonical_name] = value
+
+    logger.info(
+        f"Canonical mapping finished in {(perf_counter() - started) * 1000:.1f} ms; mapped_features={list(canonical.keys())}."
+    )
 
     return canonical
 

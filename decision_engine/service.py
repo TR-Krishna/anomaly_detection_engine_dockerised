@@ -19,6 +19,7 @@ import sys
 import os
 import json
 import logging
+from time import perf_counter
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -128,6 +129,10 @@ def build_context(
         if k in features and features[k] is not None
     }
 
+    logger.info(
+        f"Built Decision Engine context for anomaly_id={anomaly_id}: history_rows={len(history)}, current_values={list(current_values.keys())}, rule_violations={rule_violations}, zscore_triggers={zscore_triggers}, if_model_used={if_model_used}."
+    )
+
     return AnomalyContext(
         meter_serial=meter_serial,
         interval_timestamp=str(interval_timestamp),
@@ -167,9 +172,17 @@ def generate_explanation(context: AnomalyContext) -> AnomalyExplanation:
     Callers (the background task) should catch all of these,
     log them, and persist explanation_status='failed'.
     """
+    started = perf_counter()
     messages = build_messages(context)
+    logger.info(
+        f"Generating explanation prompt for anomaly_id={context.anomaly_id}: messages={len(messages)}, history_rows={len(context.history)}."
+    )
 
     raw_response = call_llm(messages)
+
+    logger.info(
+        f"LLM response received for anomaly_id={context.anomaly_id} with {len(raw_response)} character(s)."
+    )
 
     parsed = _extract_json(raw_response)
 
@@ -178,6 +191,10 @@ def generate_explanation(context: AnomalyContext) -> AnomalyExplanation:
     parsed.setdefault("llm_model", provider_info["model"])
 
     explanation = AnomalyExplanation(**parsed)
+
+    logger.info(
+        f"Explanation generated for anomaly_id={context.anomaly_id} in {(perf_counter() - started) * 1000:.1f} ms."
+    )
 
     return explanation
 
@@ -210,6 +227,7 @@ def run_explanation_task(
     # module to be used without DB in unit tests.
     from db.client import get_last_n_readings, update_anomaly_explanation
 
+    started = perf_counter()
     logger.info(f"[decision_engine] Generating explanation for anomaly_id={anomaly_id} "
                 f"(meter={meter_serial}, ts={interval_timestamp})")
 
@@ -224,6 +242,9 @@ def run_explanation_task(
         logger.error(f"[decision_engine] Failed to fetch history for "
                      f"anomaly_id={anomaly_id}: {e}")
         history_raw = []
+    logger.info(
+        f"[decision_engine] Retrieved {len(history_raw)} historical row(s) for anomaly_id={anomaly_id}."
+    )
 
     context = build_context(
         meter_serial=meter_serial,
@@ -248,7 +269,7 @@ def run_explanation_task(
             error=None,
         )
         logger.info(f"[decision_engine] Explanation completed for "
-                    f"anomaly_id={anomaly_id} (confidence={explanation.confidence})")
+                    f"anomaly_id={anomaly_id} (confidence={explanation.confidence}, duration={(perf_counter() - started) * 1000:.1f} ms)")
 
     except LLMClientError as e:
         logger.error(f"[decision_engine] LLM call failed for anomaly_id={anomaly_id}: {e}")

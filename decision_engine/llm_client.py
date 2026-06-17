@@ -36,6 +36,7 @@ import sys
 import os
 import json
 import logging
+from time import perf_counter
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -137,8 +138,14 @@ def call_llm(messages: list[dict]) -> str:
     """
     kwargs = _build_completion_kwargs(messages)
     model_str = kwargs["model"]
+    started = perf_counter()
 
-    logger.info(f"Calling LLM: {model_str}")
+    logger.info(
+        f"Calling LLM: {model_str} with {len(messages)} message(s), max_tokens={kwargs.get('max_tokens')}, timeout={kwargs.get('timeout')}, retries={kwargs.get('num_retries')}."
+    )
+    logger.debug(
+        f"LLM request content lengths: {[len(m.get('content', '')) for m in messages]}."
+    )
 
     try:
         response = completion(**kwargs)
@@ -174,6 +181,10 @@ def call_llm(messages: list[dict]) -> str:
     content = response.choices[0].message.content
     if content is None:
         raise LLMClientError(f"LLM '{model_str}' returned empty response.")
+
+    logger.info(
+        f"LLM call completed for {model_str} in {(perf_counter() - started) * 1000:.1f} ms; response_length={len(content)}."
+    )
 
     return content
 
