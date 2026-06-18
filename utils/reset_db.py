@@ -46,6 +46,8 @@ def reset_meter(meter_serial: str, dry_run: bool = False) -> dict:
     Deletes all records for a specific meter across all three tables.
     Deletion order respects FK constraints:
         anomaly_log → meter_telemetry → raw_meter_readings
+    The meter_telemetry table may include flagged_anomalous rows,
+    but they are deleted the same way as normal telemetry.
     """
     counts = {}
 

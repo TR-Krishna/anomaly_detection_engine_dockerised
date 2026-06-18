@@ -133,6 +133,7 @@ def insert_telemetry(
     interval_timestamp: str,
     raw_data: dict,
     received_at: str,
+    flagged_anomalous: bool = False,
     source_raw_id: Optional[int] = None,
 ) -> None:
     """
@@ -142,8 +143,8 @@ def insert_telemetry(
     """
     sql = """
         INSERT INTO meter_telemetry
-            (meter_serial, interval_timestamp, raw_data, received_at, source_raw_id)
-        VALUES (%s, %s, %s, %s, %s)
+            (meter_serial, interval_timestamp, raw_data, received_at, flagged_anomalous, source_raw_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT ON CONSTRAINT uq_telemetry_interval DO NOTHING;
     """
     with get_connection() as conn:
@@ -153,10 +154,11 @@ def insert_telemetry(
                 interval_timestamp,
                 json.dumps(raw_data),
                 received_at,
+                flagged_anomalous,
                 source_raw_id,
             ))
     logger.debug(
-        f"Inserted telemetry for meter={meter_serial} interval_timestamp={interval_timestamp} source_raw_id={source_raw_id}."
+        f"Inserted telemetry for meter={meter_serial} interval_timestamp={interval_timestamp} flagged_anomalous={flagged_anomalous} source_raw_id={source_raw_id}."
     )
 
 
@@ -303,6 +305,7 @@ def get_last_n_readings(
             FROM meter_telemetry
             WHERE meter_serial = %s
               AND interval_timestamp < %s
+                            AND flagged_anomalous = FALSE
             ORDER BY interval_timestamp DESC
             LIMIT %s;
         """
@@ -312,6 +315,7 @@ def get_last_n_readings(
             SELECT interval_timestamp, raw_data
             FROM meter_telemetry
             WHERE meter_serial = %s
+              AND flagged_anomalous = FALSE
             ORDER BY interval_timestamp DESC
             LIMIT %s;
         """
@@ -355,6 +359,7 @@ def get_historical_avg_same_hour(
         WHERE meter_serial = %s
           AND EXTRACT(HOUR FROM interval_timestamp) = %s
           AND interval_timestamp >= NOW() - INTERVAL '%s days'
+            AND flagged_anomalous = FALSE
           AND raw_data ? 'energy_consumption';
     """
     with get_connection() as conn:
@@ -382,6 +387,7 @@ def get_historical_avg_same_day_type(
         WHERE meter_serial = %s
           AND (EXTRACT(DOW FROM interval_timestamp) IN (0, 6)) = %s
           AND interval_timestamp >= NOW() - INTERVAL '%s days'
+            AND flagged_anomalous = FALSE
           AND raw_data ? 'energy_consumption';
     """
     with get_connection() as conn:

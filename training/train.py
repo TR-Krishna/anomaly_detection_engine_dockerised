@@ -49,6 +49,7 @@ from config.settings import (
     DERIVED_FEATURE_MAP,
     MODEL_PATHS,
     DETECTION_CONFIG,
+    ROLLING_WINDOW_SIZE,
     group_model_paths,
 )
 
@@ -141,8 +142,8 @@ def _engineer_features(grp: pd.DataFrame) -> pd.DataFrame:
     if primary_col is not None:
         s = grp[primary_col]
         grp["delta"]        = s.diff().fillna(0)
-        grp["rolling_mean"] = s.rolling(window=5, min_periods=1).mean()
-        grp["rolling_std"]  = s.rolling(window=5, min_periods=1).std().fillna(0)
+        grp["rolling_mean"] = s.rolling(window=ROLLING_WINDOW_SIZE, min_periods=1).mean()
+        grp["rolling_std"]  = s.rolling(window=ROLLING_WINDOW_SIZE, min_periods=1).std().fillna(0)
         grp["z_score"]      = (s - grp["rolling_mean"]) / (grp["rolling_std"] + 1e-5)
         grp["spike_ratio"]  = s / (grp["rolling_mean"] + 1e-5)
 

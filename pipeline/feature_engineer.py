@@ -27,12 +27,11 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from config.settings import ALL_FEATURES
+from config.settings import ALL_FEATURES, ROLLING_WINDOW_SIZE
 
 logger = logging.getLogger(__name__)
 
 NOMINAL_VOLTAGE  = 230.0
-ROLLING_WINDOW   = 5
 
 # Priority order for the "primary series" used in rolling stats.
 # The first key present in the canonical dict wins.
@@ -90,9 +89,9 @@ def _last_canonical_value(history: list[dict], key: str) -> Optional[float]:
     return None
 
 
-def _build_series(history: list[dict], key: str, current_val: float) -> list[float]:
+def _build_series(history: list[dict], key: str) -> list[float]:
     """
-    Builds a time series for `key` from history + current value.
+    Builds a time series for `key` from history only.
     Missing history values are forward-filled with the last known.
     """
     series = []
@@ -110,26 +109,141 @@ def _build_series(history: list[dict], key: str, current_val: float) -> list[flo
         else:
             if last_known is not None:
                 series.append(last_known)
-    series.append(current_val)
     return series
 
 
 def _rolling_features(series: list[float], current_val: float):
     """
     Computes rolling_mean, rolling_std, z_score, spike_ratio, delta
-    from a series (oldest → newest, current value is last).
+    from a historical series and the current value.
     Returns a tuple of (delta, rolling_mean, rolling_std, z_score, spike_ratio).
     """
-    n = len(series)
-    delta = (current_val - series[-2]) if n >= 2 else 0.0
+    if not series:
+        return None, None, None, None, None
 
-    window       = series[-ROLLING_WINDOW:]
-    rolling_mean = float(np.mean(window))
-    rolling_std  = float(np.std(window)) if len(window) > 1 else 0.0
-    z_score      = (current_val - rolling_mean) / (rolling_std + 1e-5)
-    spike_ratio  = current_val / (rolling_mean + 1e-5)
+    delta = (current_val - series[-1]) if len(series) >= 1 else None
+
+    window = series[-ROLLING_WINDOW_SIZE:]
+    rolling_mean = float(np.mean(window)) if window else None
+    rolling_std = float(np.std(window)) if len(window) > 1 else (0.0 if window else None)
+
+    if rolling_mean is None:
+        z_score = None
+        spike_ratio = None
+    else:
+        z_score = (current_val - rolling_mean) / (rolling_std + 1e-5)
+        spike_ratio = current_val / (rolling_mean + 1e-5)
 
     return delta, rolling_mean, rolling_std, z_score, spike_ratio
+
+
+def summarize_rolling_state(
+    canonical: dict,
+    history: list[dict],
+    interval_ts: str,
+    include_current: bool = False,
+) -> dict:
+    """
+    Summarises the historical rolling baseline and optionally the
+    updated state that would result from including the current value.
+
+    The returned rolling stats always come from the last
+    ROLLING_WINDOW_SIZE samples of the selected series.
+    """
+    try:
+        dt = datetime.fromisoformat(str(interval_ts))
+    except Exception:
+        dt = datetime.utcnow()
+
+    hour_of_day = dt.hour
+    day_of_week = dt.weekday()
+    is_weekend = 1 if day_of_week >= 5 else 0
+    holiday = _is_holiday(dt)
+
+    energy = _optional_float(canonical, "energy_consumption")
+    voltage = _optional_float(canonical, "voltage")
+    current = _optional_float(canonical, "current")
+    pf = _optional_float(canonical, "power_factor")
+    app_e = _optional_float(canonical, "apparent_import_energy")
+
+    primary_key = None
+    primary_val = None
+    for key in PRIMARY_SERIES_PRIORITY:
+        val = _optional_float(canonical, key)
+        if val is not None:
+            primary_key = key
+            primary_val = val
+            break
+
+    history_series = _build_series(history, primary_key) if primary_key is not None else []
+    series = list(history_series)
+    if include_current and primary_val is not None:
+        series.append(primary_val)
+
+    window = series[-ROLLING_WINDOW_SIZE:] if series else []
+    sample_count = len(window)
+    rolling_mean = float(np.mean(window)) if window else None
+    rolling_std = float(np.std(window)) if len(window) > 1 else (0.0 if window else None)
+
+    delta = None
+    z_score = None
+    spike_ratio = None
+    if primary_val is not None and rolling_mean is not None:
+        if history_series:
+            delta = primary_val - history_series[-1]
+        z_score = (primary_val - rolling_mean) / (rolling_std + 1e-5)
+        spike_ratio = primary_val / (rolling_mean + 1e-5)
+
+    hist_key = "energy_consumption" if energy is not None else primary_key
+    historical_avg_same_hour = None
+    historical_avg_same_day_type = None
+
+    if hist_key is not None:
+        same_hour_vals = [
+            float(h["raw_data"][hist_key])
+            for h in history
+            if (
+                h.get("raw_data", {}).get(hist_key) is not None
+                and _parse_hour(h.get("interval_timestamp")) == hour_of_day
+            )
+        ]
+        same_day_type_vals = [
+            float(h["raw_data"][hist_key])
+            for h in history
+            if (
+                h.get("raw_data", {}).get(hist_key) is not None
+                and _parse_is_weekend(h.get("interval_timestamp")) == is_weekend
+            )
+        ]
+        historical_avg_same_hour = (
+            float(np.mean(same_hour_vals)) if same_hour_vals else None
+        )
+        historical_avg_same_day_type = (
+            float(np.mean(same_day_type_vals)) if same_day_type_vals else None
+        )
+
+    return {
+        "hour_of_day": hour_of_day,
+        "day_of_week": day_of_week,
+        "is_weekend": is_weekend,
+        "holiday": holiday,
+        "primary_key": primary_key,
+        "primary_value": primary_val,
+        "history_sample_count": len(history_series[-ROLLING_WINDOW_SIZE:]) if history_series else 0,
+        "sample_count": sample_count,
+        "rolling_mean": rolling_mean,
+        "rolling_std": rolling_std,
+        "delta": delta,
+        "z_score": z_score,
+        "spike_ratio": spike_ratio,
+        "historical_avg_same_hour": historical_avg_same_hour,
+        "historical_avg_same_day_type": historical_avg_same_day_type,
+        "energy_consumption": energy,
+        "voltage": voltage,
+        "current": current,
+        "power_factor": pf,
+        "apparent_import_energy": app_e,
+    }
 
 
 def compute_features(
@@ -159,98 +273,37 @@ def compute_features(
         f"Feature engineering started with canonical_keys={list(canonical.keys())} and history_len={len(history)}."
     )
 
-    # ── Parse timestamp ───────────────────────────────────
-    try:
-        dt = datetime.fromisoformat(str(interval_ts))
-    except Exception as e:
-        logger.warning(f"Cannot parse interval_timestamp '{interval_ts}': {e}. Using utcnow().")
-        dt = datetime.utcnow()
-    logger.debug(f"Parsed interval timestamp '{interval_ts}' -> {dt.isoformat()}.")
-
-    # ── Time features (always available) ─────────────────
-    hour_of_day = dt.hour
-    day_of_week = dt.weekday()
-    is_weekend  = 1 if day_of_week >= 5 else 0
-    holiday     = _is_holiday(dt)
-
-    # ── Raw electrical values ─────────────────────────────
-    energy  = _optional_float(canonical, "energy_consumption")
-    voltage = _optional_float(canonical, "voltage")
-    current = _optional_float(canonical, "current")
-    pf      = _optional_float(canonical, "power_factor")
-    app_e   = _optional_float(canonical, "apparent_import_energy")
-
-    # ── Determine primary series for rolling stats ────────
-    # Use the first available parameter in priority order.
-    primary_key = None
-    primary_val = None
-    for key in PRIMARY_SERIES_PRIORITY:
-        val = _optional_float(canonical, key)
-        if val is not None:
-            primary_key = key
-            primary_val = val
-            break
+    summary = summarize_rolling_state(canonical, history, interval_ts, include_current=False)
     logger.info(
-        f"Primary rolling series resolved to '{primary_key}' with value={primary_val}."
+        f"Historical sample count={summary['history_sample_count']}, rolling_mean={_round_opt(summary['rolling_mean'])}, rolling_std={_round_opt(summary['rolling_std'])}, same_hour_avg={_round_opt(summary['historical_avg_same_hour'])}."
     )
 
-    # ── Rolling features ──────────────────────────────────
-    delta = rolling_mean = rolling_std = z_score = spike_ratio = None
+    hour_of_day = summary["hour_of_day"]
+    day_of_week = summary["day_of_week"]
+    is_weekend = summary["is_weekend"]
+    holiday = summary["holiday"]
 
-    if primary_val is not None:
-        series = _build_series(history, primary_key, primary_val)
-        delta, rolling_mean, rolling_std, z_score, spike_ratio = _rolling_features(
-            series, primary_val
+    energy = summary["energy_consumption"]
+    voltage = summary["voltage"]
+    current = summary["current"]
+    pf = summary["power_factor"]
+    app_e = summary["apparent_import_energy"]
+    primary_key = summary["primary_key"]
+    primary_val = summary["primary_value"]
+    delta = summary["delta"]
+    rolling_mean = summary["rolling_mean"]
+    rolling_std = summary["rolling_std"]
+    z_score = summary["z_score"]
+    spike_ratio = summary["spike_ratio"]
+    historical_avg_same_hour = summary["historical_avg_same_hour"]
+    historical_avg_same_day_type = summary["historical_avg_same_day_type"]
+
+    if primary_key is not None:
+        logger.info(
+            f"Primary rolling series resolved to '{primary_key}' with value={primary_val}."
         )
-        if primary_key != "energy_consumption":
-            # If rolling stats are based on a non-energy primary,
-            # still log so it's traceable
-            logger.debug(
-                f"Rolling stats computed from '{primary_key}' "
-                f"(energy_consumption unavailable)."
-            )
         logger.info(
             f"Rolling features computed from '{primary_key}': delta={_round_opt(delta)}, mean={_round_opt(rolling_mean)}, std={_round_opt(rolling_std)}, z_score={_round_opt(z_score)}, spike_ratio={_round_opt(spike_ratio)}."
-        )
-
-    # ── Energy-specific rolling features ─────────────────
-    # delta/rolling_mean/z_score/spike_ratio computed above use
-    # primary series. When energy IS the primary, they are energy-based.
-    # When energy is absent, they reflect the available primary (current/voltage).
-
-    # ── Historical averages ───────────────────────────────
-    # Computed from energy when available, else from primary series.
-    hist_key = "energy_consumption" if energy is not None else primary_key
-
-    historical_avg_same_hour     = None
-    historical_avg_same_day_type = None
-
-    if hist_key is not None:
-        same_hour_vals = [
-            float(h["raw_data"][hist_key])
-            for h in history
-            if (
-                h.get("raw_data", {}).get(hist_key) is not None
-                and _parse_hour(h.get("interval_timestamp")) == hour_of_day
-            )
-        ]
-        same_day_type_vals = [
-            float(h["raw_data"][hist_key])
-            for h in history
-            if (
-                h.get("raw_data", {}).get(hist_key) is not None
-                and _parse_is_weekend(h.get("interval_timestamp")) == is_weekend
-            )
-        ]
-        ref_val = _optional_float(canonical, hist_key) or 0.0
-        historical_avg_same_hour = (
-            float(np.mean(same_hour_vals)) if same_hour_vals else ref_val
-        )
-        historical_avg_same_day_type = (
-            float(np.mean(same_day_type_vals)) if same_day_type_vals else ref_val
-        )
-        logger.info(
-            f"Historical averages computed from '{hist_key}': same_hour={_round_opt(historical_avg_same_hour)}, same_day_type={_round_opt(historical_avg_same_day_type)}."
         )
 
     # ── Optional derived features ─────────────────────────

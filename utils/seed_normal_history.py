@@ -232,12 +232,13 @@ def seed_meter(
                 ts,
                 json.dumps(canonical),
                 ts,    # received_at ≈ interval_ts for seeded data
+                False, # flagged_anomalous — seeded history must stay clean
                 None,  # source_raw_id — no raw record for seeded data
             ))
 
         sql = """
             INSERT INTO meter_telemetry
-                (meter_serial, interval_timestamp, raw_data, received_at, source_raw_id)
+                (meter_serial, interval_timestamp, raw_data, received_at, flagged_anomalous, source_raw_id)
             VALUES %s
             ON CONFLICT ON CONSTRAINT uq_telemetry_interval DO NOTHING
         """

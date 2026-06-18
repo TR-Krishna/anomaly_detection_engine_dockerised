@@ -52,6 +52,7 @@ from api.schemas import (
 )
 from config.settings import MODEL_PATHS, ROLLING_WINDOW_SIZE, DECISION_ENGINE_CONFIG
 from pipeline import run as run_pipeline
+from pipeline.feature_engineer import summarize_rolling_state
 from pipeline.if_detector import reload_artifacts
 from decision_engine.service import run_explanation_task
 
@@ -214,6 +215,7 @@ def _persist(record, parsed_interval_ts: str, result) -> Optional[int]:
                 interval_timestamp=parsed_interval_ts,
                 raw_data=raw_data,
                 received_at=record.timestamp,
+                flagged_anomalous=bool(result.is_anomaly),
                 source_raw_id=record.id,
             )
 
@@ -244,6 +246,16 @@ def _persist(record, parsed_interval_ts: str, result) -> Optional[int]:
         logger.error(f"DB persistence failed for record {record.id}: {e}")
 
     return anomaly_id
+
+
+def _log_baseline_snapshot(prefix: str, canonical: dict, history: list[dict], interval_ts: str) -> None:
+    summary = summarize_rolling_state(canonical, history, interval_ts, include_current=False)
+    logger.info(
+        f"{prefix} Historical Sample Count={summary['history_sample_count']}; Rolling Mean={summary['rolling_mean']}; Rolling Standard Deviation={summary['rolling_std']}; Same-Hour Historical Average={summary['historical_avg_same_hour']}."
+    )
+    logger.info(
+        f"{prefix} Updated Sample Count={summary['sample_count']}; Updated Mean={summary['rolling_mean']}; Updated Standard Deviation={summary['rolling_std']}."
+    )
 
 def _build_response(
     result,
@@ -368,6 +380,15 @@ async def detect(
             api_record=record.model_dump(),
             history=history,
         )
+
+        if result.features and not result.error:
+            _log_baseline_snapshot(
+                prefix=f"[{record.meterSerial}] Before persistence:",
+                canonical=result.features,
+                history=history,
+                interval_ts=result.interval_timestamp,
+            )
+
         logger.info(
             f"[{record.meterSerial}] Pipeline completed in {(perf_counter() - pipeline_started) * 1000:.1f} ms; anomaly={result.is_anomaly}, error={result.error!r}."
         )
@@ -377,6 +398,18 @@ async def detect(
         logger.info(
             f"[{record.meterSerial}] Persistence finished in {(perf_counter() - persist_started) * 1000:.1f} ms; anomaly_id={anomaly_id}."
         )
+
+        if result.features and not result.error:
+            post_history = _fetch_history(
+                meter_serial=record.meterSerial,
+                before_timestamp=None,
+            )
+            _log_baseline_snapshot(
+                prefix=f"[{record.meterSerial}] After persistence:",
+                canonical=result.features,
+                history=post_history,
+                interval_ts=result.interval_timestamp,
+            )
 
         if (
             result.is_anomaly

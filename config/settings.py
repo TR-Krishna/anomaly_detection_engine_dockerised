@@ -328,19 +328,21 @@ DERIVED_FEATURE_MAP = {
 
 DETECTION_CONFIG = {
     "zscore_threshold":        3.0,
+    "same_hour_deviation_threshold": 0.40,
     "voltage_min":             180.0,
     "voltage_max":             270.0,
     "power_factor_min":        0.0,
     "power_factor_max":        1.0,
     "zero_consumption_window": 3,
     "if_contamination":        0.05,
+    "rolling_window_size":     5,
 }
 
 # =========================================================
 # ROLLING WINDOW
 # =========================================================
 
-ROLLING_WINDOW_SIZE = 10
+ROLLING_WINDOW_SIZE = DETECTION_CONFIG["rolling_window_size"]
 
 # =========================================================
 # DECISION ENGINE — LLM CONFIGURATION

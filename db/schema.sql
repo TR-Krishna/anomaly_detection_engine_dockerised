@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS meter_telemetry (
     -- API receive time, for latency tracking
     received_at         TIMESTAMPTZ     NOT NULL,
 
+    -- Exclude detected anomalies from future baseline calculations
+    flagged_anomalous   BOOLEAN         NOT NULL DEFAULT FALSE,
+
     -- FK back to the source raw record (nullable: allows
     -- synthetic / backfilled rows that have no raw record)
     source_raw_id       BIGINT          REFERENCES raw_meter_readings(id)
@@ -79,6 +82,9 @@ CREATE TABLE IF NOT EXISTS meter_telemetry (
     -- Prevent duplicate intervals per meter
     CONSTRAINT uq_telemetry_interval UNIQUE (meter_serial, interval_timestamp)
 );
+
+ALTER TABLE meter_telemetry
+    ADD COLUMN IF NOT EXISTS flagged_anomalous BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_meter_serial
     ON meter_telemetry (meter_serial);
