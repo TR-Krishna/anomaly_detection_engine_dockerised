@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS meter_telemetry (
     -- API receive time, for latency tracking
     received_at         TIMESTAMPTZ     NOT NULL,
 
+    -- Exclude detected anomalies from future baseline calculations
+    flagged_anomalous   BOOLEAN         NOT NULL DEFAULT FALSE,
+
     -- FK back to the source raw record (nullable: allows
     -- synthetic / backfilled rows that have no raw record)
     source_raw_id       BIGINT          REFERENCES raw_meter_readings(id)
@@ -79,6 +82,9 @@ CREATE TABLE IF NOT EXISTS meter_telemetry (
     -- Prevent duplicate intervals per meter
     CONSTRAINT uq_telemetry_interval UNIQUE (meter_serial, interval_timestamp)
 );
+
+ALTER TABLE meter_telemetry
+    ADD COLUMN IF NOT EXISTS flagged_anomalous BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_meter_serial
     ON meter_telemetry (meter_serial);
@@ -125,6 +131,18 @@ CREATE TABLE IF NOT EXISTS anomaly_log (
 
     detected_at         TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
 
+    -- Decision Engine (LLM explanation)
+    -- explanation_status: 'pending' | 'completed' | 'failed' | NULL (not requested)
+    explanation_status       VARCHAR(16),
+    -- Structured JSON output from the LLM:
+    --   { anomaly_explanation, supporting_factors,
+    --     possible_false_positive_scenarios, confidence, limitations,
+    --     llm_provider, llm_model }
+    explanation              JSONB,
+    explanation_generated_at TIMESTAMPTZ,
+    -- Error message if explanation generation failed
+    explanation_error        TEXT,
+
     CONSTRAINT fk_anomaly_telemetry
         FOREIGN KEY (meter_serial, interval_timestamp)
         REFERENCES meter_telemetry (meter_serial, interval_timestamp)
@@ -136,3 +154,8 @@ CREATE INDEX IF NOT EXISTS idx_anomaly_meter_serial
 
 CREATE INDEX IF NOT EXISTS idx_anomaly_detected_at
     ON anomaly_log (detected_at DESC);
+
+-- Speeds up "find anomalies still awaiting explanation" queries
+CREATE INDEX IF NOT EXISTS idx_anomaly_explanation_status
+    ON anomaly_log (explanation_status)
+    WHERE explanation_status IS NOT NULL;

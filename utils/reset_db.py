@@ -46,6 +46,8 @@ def reset_meter(meter_serial: str, dry_run: bool = False) -> dict:
     Deletes all records for a specific meter across all three tables.
     Deletion order respects FK constraints:
         anomaly_log → meter_telemetry → raw_meter_readings
+    The meter_telemetry table may include flagged_anomalous rows,
+    but they are deleted the same way as normal telemetry.
     """
     counts = {}
 
@@ -112,7 +114,9 @@ def reset_all(dry_run: bool = False) -> dict:
 
 
 def show_table_summary() -> None:
-    """Prints current row counts for all tables."""
+    """Prints current row counts for all tables, plus a breakdown
+    of explanation_status on anomaly_log (pending/completed/failed),
+    which is useful once the decision engine is in use."""
     conn = get_conn()
     cur  = conn.cursor()
     print("\n  Current table state:")
@@ -120,6 +124,20 @@ def show_table_summary() -> None:
         cur.execute(f"SELECT COUNT(*) FROM {table}")
         count = cur.fetchone()[0]
         print(f"    {table:<25} {count:>6} rows")
+
+    cur.execute("""
+        SELECT explanation_status, COUNT(*)
+        FROM anomaly_log
+        GROUP BY explanation_status
+        ORDER BY explanation_status
+    """)
+    rows = cur.fetchall()
+    if rows:
+        print("\n  anomaly_log.explanation_status breakdown:")
+        for status_val, count in rows:
+            label = status_val if status_val else "(none / engine disabled)"
+            print(f"    {label:<25} {count:>6} rows")
+
     cur.close()
     conn.close()
 

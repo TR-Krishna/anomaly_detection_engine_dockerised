@@ -9,6 +9,7 @@ whatever canonical features are available.
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from time import perf_counter
 
 from pipeline.obis_parser      import parse_api_record, OBISParseError
 from pipeline.canonical_mapper import map_to_canonical
@@ -18,6 +19,16 @@ from pipeline import zscore_detector
 from pipeline import if_detector
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_present(values: dict, max_items: int = 8) -> str:
+    keys = [k for k, v in values.items() if v is not None]
+    if not keys:
+        return "[]"
+    preview = keys[:max_items]
+    if len(keys) > max_items:
+        preview.append(f"...(+{len(keys) - max_items} more)")
+    return "[" + ", ".join(preview) + "]"
 
 
 @dataclass
@@ -53,10 +64,18 @@ def run(api_record: dict, history: list[dict]) -> PipelineResult:
     gracefully when parameters are absent.
     """
     meter_serial = api_record.get("meterSerial", "UNKNOWN")
+    pipeline_started = perf_counter()
+    logger.info(
+        f"[{meter_serial}] Pipeline started with {len(history)} historical reading(s)."
+    )
 
     # ── Stage 1: Parse rawValue ────────────────────────────
     try:
+        stage_started = perf_counter()
         parsed = parse_api_record(api_record)
+        logger.info(
+            f"[{meter_serial}] Parsed rawValue in {(perf_counter() - stage_started) * 1000:.1f} ms; interval_timestamp={parsed['interval_timestamp']}, readings={len(parsed['readings'])}."
+        )
     except (OBISParseError, KeyError) as e:
         logger.error(f"[{meter_serial}] OBIS parse failed: {e}")
         return PipelineResult(
@@ -69,7 +88,11 @@ def run(api_record: dict, history: list[dict]) -> PipelineResult:
     interval_ts = parsed["interval_timestamp"]
 
     # ── Stage 2: Canonical mapping ────────────────────────
+    stage_started = perf_counter()
     canonical = map_to_canonical(parsed["readings"])
+    logger.info(
+        f"[{meter_serial}] Canonical mapping completed in {(perf_counter() - stage_started) * 1000:.1f} ms; canonical_features={_summarize_present(canonical)}."
+    )
 
     if not canonical:
         msg = "No recognisable OBIS codes in payload."
@@ -89,10 +112,14 @@ def run(api_record: dict, history: list[dict]) -> PipelineResult:
 
     # ── Stage 3: Feature engineering ──────────────────────
     try:
+        stage_started = perf_counter()
         features = compute_features(
             canonical=canonical,
             interval_ts=interval_ts,
             history=history,
+        )
+        logger.info(
+            f"[{meter_serial}] Feature engineering completed in {(perf_counter() - stage_started) * 1000:.1f} ms; non_null_features={_summarize_present(features)}."
         )
     except Exception as e:
         logger.error(f"[{meter_serial}] Feature engineering failed: {e}")
@@ -104,14 +131,26 @@ def run(api_record: dict, history: list[dict]) -> PipelineResult:
         )
 
     # ── Stage 4: Rule-based detection ─────────────────────
+    stage_started = perf_counter()
     rule_result   = rule_based.check(features)
+    logger.info(
+        f"[{meter_serial}] Rule-based layer completed in {(perf_counter() - stage_started) * 1000:.1f} ms; anomaly={rule_result.is_anomaly}, violations={rule_result.violations}."
+    )
 
     # ── Stage 5: Z-score detection ────────────────────────
+    stage_started = perf_counter()
     zscore_result = zscore_detector.check(features)
+    logger.info(
+        f"[{meter_serial}] Z-score layer completed in {(perf_counter() - stage_started) * 1000:.1f} ms; anomaly={zscore_result.is_anomaly}, triggers={zscore_result.triggers}, z_score={zscore_result.z_score}, spike_ratio={zscore_result.spike_ratio}."
+    )
 
     # ── Stage 6: Isolation Forest (with group routing) ────
     try:
+        stage_started = perf_counter()
         if_result = if_detector.check(features, canonical=canonical)
+        logger.info(
+            f"[{meter_serial}] Isolation Forest layer completed in {(perf_counter() - stage_started) * 1000:.1f} ms; anomaly={if_result.is_anomaly}, model_used={if_result.model_used}, score={if_result.anomaly_score:.4f}."
+        )
     except FileNotFoundError as e:
         logger.error(f"[{meter_serial}] IF model not loaded: {e}")
         if_result = None
@@ -131,6 +170,10 @@ def run(api_record: dict, history: list[dict]) -> PipelineResult:
         logger.info(
             f"[{meter_serial}] ANOMALY at {interval_ts} | layers: {layers_fired}"
         )
+
+    logger.info(
+        f"[{meter_serial}] Pipeline finished in {(perf_counter() - pipeline_started) * 1000:.1f} ms; anomaly={is_anomaly}."
+    )
 
     return PipelineResult(
         meter_serial=meter_serial,

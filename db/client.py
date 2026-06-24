@@ -13,6 +13,7 @@ import json
 import logging
 from contextlib import contextmanager
 from typing import Optional
+from time import perf_counter
 
 import psycopg2
 from psycopg2 import pool
@@ -63,6 +64,7 @@ def get_connection():
     """
     conn = get_pool().getconn()
     try:
+        logger.debug("Database connection acquired from pool.")
         yield conn
         conn.commit()
     except Exception:
@@ -70,6 +72,7 @@ def get_connection():
         raise
     finally:
         get_pool().putconn(conn)
+        logger.debug("Database connection returned to pool.")
 
 
 # =========================================================
@@ -120,6 +123,9 @@ def insert_raw_reading(
                 id, meter_serial, received_at,
                 profile_obis_code, entry_id, raw_value,
             ))
+    logger.debug(
+        f"Inserted raw reading id={id} meter={meter_serial} profile={profile_obis_code}."
+    )
 
 
 def insert_telemetry(
@@ -127,6 +133,7 @@ def insert_telemetry(
     interval_timestamp: str,
     raw_data: dict,
     received_at: str,
+    flagged_anomalous: bool = False,
     source_raw_id: Optional[int] = None,
 ) -> None:
     """
@@ -136,8 +143,8 @@ def insert_telemetry(
     """
     sql = """
         INSERT INTO meter_telemetry
-            (meter_serial, interval_timestamp, raw_data, received_at, source_raw_id)
-        VALUES (%s, %s, %s, %s, %s)
+            (meter_serial, interval_timestamp, raw_data, received_at, flagged_anomalous, source_raw_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
         ON CONFLICT ON CONSTRAINT uq_telemetry_interval DO NOTHING;
     """
     with get_connection() as conn:
@@ -147,8 +154,12 @@ def insert_telemetry(
                 interval_timestamp,
                 json.dumps(raw_data),
                 received_at,
+                flagged_anomalous,
                 source_raw_id,
             ))
+    logger.debug(
+        f"Inserted telemetry for meter={meter_serial} interval_timestamp={interval_timestamp} flagged_anomalous={flagged_anomalous} source_raw_id={source_raw_id}."
+    )
 
 
 def insert_anomaly(
@@ -161,18 +172,32 @@ def insert_anomaly(
     zscore_value: Optional[float],
     rule_violations: Optional[list],
     feature_snapshot: Optional[dict],
-) -> None:
+    explanation_status: Optional[str] = None,
+) -> Optional[int]:
     """
     Writes a detected anomaly to anomaly_log.
+
+    Parameters
+    ----------
+    explanation_status : if set (e.g. "pending"), marks this anomaly
+                          as awaiting LLM explanation generation.
+                          Leave None if the decision engine is disabled.
+
+    Returns
+    -------
+    The new anomaly_log.id, or None if insert failed. Used by the API
+    layer to schedule a background explanation task for this row.
     """
     sql = """
         INSERT INTO anomaly_log (
             meter_serial, interval_timestamp,
             rule_based_flag, zscore_flag, if_flag,
             if_score, zscore_value,
-            rule_violations, feature_snapshot
+            rule_violations, feature_snapshot,
+            explanation_status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        RETURNING id;
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -186,8 +211,65 @@ def insert_anomaly(
                 zscore_value,
                 json.dumps(rule_violations) if rule_violations else None,
                 json.dumps(feature_snapshot) if feature_snapshot else None,
+                explanation_status,
+            ))
+            row = cur.fetchone()
+            logger.info(
+                f"Inserted anomaly log for meter={meter_serial} interval_timestamp={interval_timestamp}; explanation_status={explanation_status}."
+            )
+            return row[0] if row else None
+
+
+def update_anomaly_explanation(
+    anomaly_id: int,
+    explanation: Optional[dict],
+    status: str,
+    error: Optional[str] = None,
+) -> None:
+    """
+    Updates the explanation fields for an anomaly_log row.
+    Called by the decision engine background task after the
+    LLM call completes (successfully or not).
+    """
+    sql = """
+        UPDATE anomaly_log
+        SET explanation = %s,
+            explanation_status = %s,
+            explanation_generated_at = NOW(),
+            explanation_error = %s
+        WHERE id = %s;
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (
+                json.dumps(explanation) if explanation else None,
+                status,
+                error,
+                anomaly_id,
             ))
 
+
+def get_anomaly_by_id(anomaly_id: int) -> Optional[dict]:
+    """
+    Fetches a single anomaly_log row by id, including explanation
+    fields. Used by GET /anomalies/{id}/explanation.
+    """
+    sql = """
+        SELECT id, meter_serial, interval_timestamp,
+               rule_based_flag, zscore_flag, if_flag,
+               if_score, zscore_value, rule_violations, feature_snapshot,
+               detected_at,
+               explanation_status, explanation,
+               explanation_generated_at, explanation_error
+        FROM anomaly_log
+        WHERE id = %s;
+    """
+    with get_connection() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, (anomaly_id,))
+            row = cur.fetchone()
+            logger.debug(f"Fetched anomaly_log row for anomaly_id={anomaly_id}: {'found' if row else 'missing'}.")
+            return dict(row) if row else None
 
 # =========================================================
 # READ HELPERS
@@ -223,6 +305,7 @@ def get_last_n_readings(
             FROM meter_telemetry
             WHERE meter_serial = %s
               AND interval_timestamp < %s
+                            AND flagged_anomalous = FALSE
             ORDER BY interval_timestamp DESC
             LIMIT %s;
         """
@@ -232,6 +315,7 @@ def get_last_n_readings(
             SELECT interval_timestamp, raw_data
             FROM meter_telemetry
             WHERE meter_serial = %s
+              AND flagged_anomalous = FALSE
             ORDER BY interval_timestamp DESC
             LIMIT %s;
         """
@@ -241,6 +325,10 @@ def get_last_n_readings(
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
+
+    logger.debug(
+        f"Fetched {len(rows)} telemetry row(s) for meter={meter_serial} before_timestamp={before_timestamp}."
+    )
 
     # Reverse so result is oldest → newest
     rows = list(reversed(rows))
@@ -271,6 +359,7 @@ def get_historical_avg_same_hour(
         WHERE meter_serial = %s
           AND EXTRACT(HOUR FROM interval_timestamp) = %s
           AND interval_timestamp >= NOW() - INTERVAL '%s days'
+            AND flagged_anomalous = FALSE
           AND raw_data ? 'energy_consumption';
     """
     with get_connection() as conn:
@@ -298,6 +387,7 @@ def get_historical_avg_same_day_type(
         WHERE meter_serial = %s
           AND (EXTRACT(DOW FROM interval_timestamp) IN (0, 6)) = %s
           AND interval_timestamp >= NOW() - INTERVAL '%s days'
+            AND flagged_anomalous = FALSE
           AND raw_data ? 'energy_consumption';
     """
     with get_connection() as conn:

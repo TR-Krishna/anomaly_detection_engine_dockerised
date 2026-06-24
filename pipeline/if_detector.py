@@ -23,6 +23,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
+from time import perf_counter
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from config.settings import (
@@ -179,6 +180,7 @@ def _load_group(group_name: str) -> Optional[dict]:
     (group model hasn't been trained).
     """
     if group_name in _group_cache:
+        logger.info(f"Using cached group model '{group_name}'.")
         return _group_cache[group_name]
 
     paths = group_model_paths(group_name)
@@ -240,6 +242,8 @@ def check(features: dict, canonical: dict = None) -> IFResult:
     -------
     IFResult with model_used indicating which group or "global" was used.
     """
+    started = perf_counter()
+
     # Determine present raw features for routing
     if canonical is not None:
         present = frozenset(k for k, v in canonical.items() if v is not None)
@@ -253,17 +257,26 @@ def check(features: dict, canonical: dict = None) -> IFResult:
                 raw_names.add(meta["canonical_name"])
         present = frozenset(k for k in raw_names if features.get(k) is not None)
 
+    logger.info(f"Isolation Forest routing started with raw features={sorted(present)}.")
+
     # Route to group model
     group_name = _resolve_group(present)
     if group_name:
+        logger.info(f"Resolved capability group '{group_name}' for Isolation Forest inference.")
         group_artifacts = _load_group(group_name)
     else:
+        logger.info("No capability group matched; using global Isolation Forest model.")
         group_artifacts = None
 
     if group_artifacts is not None:
-        return _run_group_model(features, group_name, group_artifacts)
+        result = _run_group_model(features, group_name, group_artifacts)
     else:
-        return _run_global_model(features)
+        result = _run_global_model(features)
+
+    logger.info(
+        f"Isolation Forest inference finished in {(perf_counter() - started) * 1000:.1f} ms; anomaly={result.is_anomaly}, model_used={result.model_used}, score={result.anomaly_score:.4f}."
+    )
+    return result
 
 
 def _run_group_model(features: dict, group_name: str, artifacts: dict) -> IFResult:
@@ -285,6 +298,10 @@ def _run_group_model(features: dict, group_name: str, artifacts: dict) -> IFResu
     X_scaled = artifacts["scaler"].transform(X)
     pred     = int(artifacts["model"].predict(X_scaled)[0])
     score    = float(artifacts["model"].decision_function(X_scaled)[0])
+
+    logger.debug(
+        f"Group '{group_name}' IF used {len(feat_list)} feature(s); prediction={pred}, score={score:.4f}."
+    )
 
     if pred == -1:
         logger.debug(f"Group '{group_name}' IF flagged anomaly: score={score:.4f}")
@@ -319,6 +336,10 @@ def _run_global_model(features: dict) -> IFResult:
     pred     = int(_global_model.predict(X_scaled)[0])
     score    = float(_global_model.decision_function(X_scaled)[0])
 
+    logger.debug(
+        f"Global IF used {len(ALL_FEATURES)} feature(s); prediction={pred}, score={score:.4f}."
+    )
+
     if pred == -1:
         logger.debug(f"Global IF flagged anomaly: score={score:.4f}")
 
@@ -338,5 +359,6 @@ def reload_artifacts():
     _group_cache = {}
     _global_model = _global_scaler = None
     _global_impute_values = _global_feature_schema = None
+    logger.info("Isolation Forest artifact caches cleared.")
     _load_global()
     logger.info("All model artifacts reloaded.")

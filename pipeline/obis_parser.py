@@ -22,6 +22,7 @@ that is the job of canonical_mapper.py.
 """
 
 import logging
+from time import perf_counter
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,9 @@ def parse_raw_value(raw_value: str) -> dict:
     if not raw_value or not raw_value.strip():
         raise OBISParseError("rawValue is empty or None.")
 
+    started = perf_counter()
+    logger.info(f"Parsing rawValue payload with {len(raw_value)} character(s).")
+
     entries = raw_value.split("|")
 
     interval_timestamp = None
@@ -147,6 +151,10 @@ def parse_raw_value(raw_value: str) -> dict:
         raise OBISParseError(
             "No valid measurement entries found in rawValue after parsing."
         )
+
+    logger.info(
+        f"Parsed rawValue into {len(readings)} reading(s) in {(perf_counter() - started) * 1000:.1f} ms; interval_timestamp={interval_timestamp}."
+    )
 
     return {
         "interval_timestamp": interval_timestamp,
@@ -189,7 +197,13 @@ def parse_api_record(record: dict) -> dict:
     OBISParseError  — propagated from parse_raw_value
     KeyError        — if required envelope fields are missing
     """
+    logger.info(
+        f"Parsing API record id={record.get('id')} meter={record.get('meterSerial')} entry={record.get('entryId')}."
+    )
     parsed_payload = parse_raw_value(record["rawValue"])
+    logger.debug(
+        f"API record id={record.get('id')} parsed into interval_timestamp={parsed_payload['interval_timestamp']} with OBIS codes={list(parsed_payload['readings'].keys())}."
+    )
 
     return {
         "id":                 record["id"],

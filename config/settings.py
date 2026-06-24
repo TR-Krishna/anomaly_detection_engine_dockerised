@@ -328,16 +328,75 @@ DERIVED_FEATURE_MAP = {
 
 DETECTION_CONFIG = {
     "zscore_threshold":        3.0,
+    "same_hour_deviation_threshold": 0.40,
     "voltage_min":             180.0,
     "voltage_max":             270.0,
     "power_factor_min":        0.0,
     "power_factor_max":        1.0,
     "zero_consumption_window": 3,
     "if_contamination":        0.05,
+    "rolling_window_size":     5,
 }
 
 # =========================================================
 # ROLLING WINDOW
 # =========================================================
 
-ROLLING_WINDOW_SIZE = 10
+ROLLING_WINDOW_SIZE = DETECTION_CONFIG["rolling_window_size"]
+
+# =========================================================
+# DECISION ENGINE — LLM CONFIGURATION
+#
+# Provider-agnostic via LiteLLM. To switch providers, change
+# environment variables only -- no code changes needed.
+#
+# -- Ollama (default, local) -----------------------------
+#   LLM_PROVIDER=ollama
+#   LLM_MODEL=llama3.1:8b
+#   LLM_API_BASE=http://localhost:11434
+#   (LLM_API_KEY not needed for Ollama)
+#
+# -- OpenAI -------------------------------------------------
+#   LLM_PROVIDER=openai
+#   LLM_MODEL=gpt-4o-mini
+#   LLM_API_KEY=sk-...
+#   (LLM_API_BASE not needed)
+#
+# -- Azure OpenAI ---------------------------------------------
+#   LLM_PROVIDER=azure
+#   LLM_MODEL=<your-deployment-name>
+#   LLM_API_BASE=https://<resource>.openai.azure.com
+#   LLM_API_KEY=<azure-key>
+#   AZURE_API_VERSION=2024-02-15-preview
+#
+# -- Anthropic --------------------------------------------------
+#   LLM_PROVIDER=anthropic
+#   LLM_MODEL=claude-sonnet-4-6
+#   LLM_API_KEY=sk-ant-...
+#
+# LiteLLM model string is built as "{LLM_PROVIDER}/{LLM_MODEL}"
+# except for ollama where LiteLLM expects "ollama/{LLM_MODEL}"
+# and api_base is passed separately -- handled in llm_client.py.
+# =========================================================
+
+LLM_CONFIG = {
+    "provider":     os.getenv("LLM_PROVIDER", "ollama"),
+    "model":        os.getenv("LLM_MODEL", "llama3.1:8b"),
+    "api_base":     os.getenv("LLM_API_BASE", "http://localhost:11434"),
+    "api_key":      os.getenv("LLM_API_KEY", None),
+    "api_version":  os.getenv("AZURE_API_VERSION", None),
+    "temperature":  float(os.getenv("LLM_TEMPERATURE", "0.2")),
+    "timeout":      float(os.getenv("LLM_TIMEOUT", "60")),
+    "max_tokens":   int(os.getenv("LLM_MAX_TOKENS", "1024")),
+    "max_retries":  int(os.getenv("LLM_MAX_RETRIES", "2")),
+}
+
+# =========================================================
+# DECISION ENGINE -- BEHAVIOUR CONFIGURATION
+# =========================================================
+
+DECISION_ENGINE_CONFIG = {
+    "history_window_size": int(os.getenv("DECISION_HISTORY_WINDOW", "20")),
+    "async_generation": True,
+    "enabled": os.getenv("DECISION_ENGINE_ENABLED", "true").lower() == "true",
+}

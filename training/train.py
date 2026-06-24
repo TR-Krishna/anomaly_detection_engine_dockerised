@@ -27,6 +27,7 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
+import logging
 import json
 import numpy as np
 import pandas as pd
@@ -49,8 +50,12 @@ from config.settings import (
     DERIVED_FEATURE_MAP,
     MODEL_PATHS,
     DETECTION_CONFIG,
+    ROLLING_WINDOW_SIZE,
     group_model_paths,
 )
+from pipeline.feature_engineer import compute_features
+
+logging.getLogger("pipeline.feature_engineer").setLevel(logging.WARNING)
 
 # =========================================================
 # CONFIG
@@ -84,13 +89,16 @@ OBIS_TO_CANONICAL = {
 def _group_feature_list(raw_features: frozenset) -> list[str]:
     """
     Returns the ordered feature list for a group:
-    time features + energy-derived + raw electrical + electrical-derived.
+    time features + runtime-emitted raw features + derived features.
     """
     feats = list(DERIVED_FEATURE_MAP["_timestamp"])  # hour, day, weekend, holiday
 
     if "energy_consumption" in raw_features:
         feats.append("energy_consumption")
         feats += DERIVED_FEATURE_MAP["energy_consumption"]
+
+    if "apparent_import_energy" in raw_features:
+        feats.append("apparent_import_energy")
 
     if "voltage" in raw_features:
         feats.append("voltage")
@@ -104,11 +112,6 @@ def _group_feature_list(raw_features: frozenset) -> list[str]:
         feats.append("power_factor")
         feats += DERIVED_FEATURE_MAP["power_factor"]
 
-    other = raw_features - {"energy_consumption", "voltage", "current", "power_factor"}
-    for f in sorted(other):
-        if f not in feats:
-            feats.append(f)
-
     # Deduplicate preserving order
     seen, ordered = set(), []
     for f in feats:
@@ -118,54 +121,47 @@ def _group_feature_list(raw_features: frozenset) -> list[str]:
     return ordered
 
 
+def _row_to_canonical(row: pd.Series) -> dict:
+    canonical = {}
+    for key, value in row.items():
+        if key in {"meter_serial", "interval_timestamp"}:
+            continue
+        if pd.isna(value):
+            continue
+        canonical[key] = value
+    return canonical
+
+
 def _engineer_features(grp: pd.DataFrame) -> pd.DataFrame:
     """
-    Computes all derived features for one meter group.
-    Energy is optional — rolling stats fall back to current/voltage.
+    Computes features using the exact runtime feature engineer.
+    History is built row-by-row so rolling stats use only prior readings.
     """
     grp = grp.sort_values("interval_timestamp").copy()
-    ts  = pd.to_datetime(grp["interval_timestamp"])
+    history: list[dict] = []
+    engineered_rows = []
 
-    grp["hour_of_day"] = ts.dt.hour
-    grp["day_of_week"] = ts.dt.dayofweek
-    grp["is_weekend"]  = (grp["day_of_week"] >= 5).astype(int)
-    grp["holiday"]     = ts.apply(lambda x: 1 if x.weekday() == 6 else 0)
-
-    # Determine primary series for rolling stats
-    primary_col = None
-    for col in ["energy_consumption", "current", "voltage"]:
-        if col in grp.columns and grp[col].notna().any():
-            primary_col = col
-            break
-
-    if primary_col is not None:
-        s = grp[primary_col]
-        grp["delta"]        = s.diff().fillna(0)
-        grp["rolling_mean"] = s.rolling(window=5, min_periods=1).mean()
-        grp["rolling_std"]  = s.rolling(window=5, min_periods=1).std().fillna(0)
-        grp["z_score"]      = (s - grp["rolling_mean"]) / (grp["rolling_std"] + 1e-5)
-        grp["spike_ratio"]  = s / (grp["rolling_mean"] + 1e-5)
-
-        hist_col = "energy_consumption" if "energy_consumption" in grp.columns else primary_col
-        grp["historical_avg_same_hour"] = (
-            grp.groupby("hour_of_day")[hist_col].transform("mean")
+    for _, row in grp.iterrows():
+        canonical = _row_to_canonical(row)
+        interval_ts = row["interval_timestamp"]
+        features = compute_features(
+            canonical=canonical,
+            interval_ts=interval_ts,
+            history=history,
         )
-        grp["historical_avg_same_day_type"] = (
-            grp.groupby("is_weekend")[hist_col].transform("mean")
-        )
-    else:
-        for c in ["delta","rolling_mean","rolling_std","z_score","spike_ratio",
-                  "historical_avg_same_hour","historical_avg_same_day_type"]:
-            grp[c] = np.nan
 
-    if "current" in grp.columns:
-        grp["current_delta"] = grp["current"].diff().fillna(0)
-    if "voltage" in grp.columns:
-        grp["voltage_deviation"] = grp["voltage"] - 230.0
-    if "power_factor" in grp.columns:
-        grp["power_factor_deviation"] = 1.0 - grp["power_factor"]
+        engineered_row = dict(canonical)
+        engineered_row.update(features)
+        engineered_row["meter_serial"] = row["meter_serial"]
+        engineered_row["interval_timestamp"] = interval_ts
+        engineered_rows.append(engineered_row)
 
-    return grp
+        history.append({
+            "interval_timestamp": interval_ts,
+            "raw_data": canonical,
+        })
+
+    return pd.DataFrame(engineered_rows)
 
 
 def _reconstruct_labels(df: pd.DataFrame) -> np.ndarray:

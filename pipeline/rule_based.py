@@ -18,6 +18,7 @@ Output : RuleBasedResult dataclass
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from time import perf_counter
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
@@ -73,6 +74,11 @@ def check(features: dict) -> RuleBasedResult:
         violations lists short rule IDs (used by decision engine).
         details holds the actual values that triggered each rule.
     """
+    started = perf_counter()
+    logger.info(
+        f"Rule-based evaluation started with available_features={[k for k, v in features.items() if v is not None]}."
+    )
+
     violations = []
     details    = {}
 
@@ -143,6 +149,10 @@ def check(features: dict) -> RuleBasedResult:
             logger.debug(f"Rule fired: frequency_out_of_range ({frequency})")
 
     is_anomaly = len(violations) > 0
+
+    logger.info(
+        f"Rule-based evaluation finished in {(perf_counter() - started) * 1000:.1f} ms; anomaly={is_anomaly}, violations={violations}."
+    )
 
     return RuleBasedResult(
         is_anomaly=is_anomaly,

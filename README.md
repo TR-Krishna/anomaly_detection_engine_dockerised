@@ -1486,3 +1486,14 @@ The API has no authentication or rate limiting. All endpoints are publicly acces
 
 **Automatic capability group discovery**
 Currently, capability groups must be manually defined in `settings.py`. A future enhancement could analyse the OBIS codes seen from each meter over its first N readings and automatically propose a new group if no existing group matches.
+
+
+Use this after resetting the database:
+
+ALTER TABLE anomaly_log ADD COLUMN IF NOT EXISTS explanation_status VARCHAR(16);
+ALTER TABLE anomaly_log ADD COLUMN IF NOT EXISTS explanation JSONB;
+ALTER TABLE anomaly_log ADD COLUMN IF NOT EXISTS explanation_generated_at TIMESTAMPTZ;
+ALTER TABLE anomaly_log ADD COLUMN IF NOT EXISTS explanation_error TEXT;
+CREATE INDEX IF NOT EXISTS idx_anomaly_explanation_status
+    ON anomaly_log (explanation_status)
+    WHERE explanation_status IS NOT NULL;
