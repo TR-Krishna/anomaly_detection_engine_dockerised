@@ -521,10 +521,9 @@ async def model_info() -> dict:
             detail="Model artifacts not found. Run training/train.py first.",
         )
 
-    schema = joblib.load(schema_path)
-    logger.info(
-        f"/model/info returned feature schema with {len(schema) if hasattr(schema, '__len__') else 'unknown'} item(s)."
-    )
+    raw_schema = joblib.load(schema_path)
+    schema = raw_schema["all_features"] if isinstance(raw_schema, dict) else raw_schema
+    logger.info(f"/model/info returned feature schema with {len(schema)} feature(s).")
 
     from config.settings import DETECTION_CONFIG, ROLLING_WINDOW_SIZE
     return {
