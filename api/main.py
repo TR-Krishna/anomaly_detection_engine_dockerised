@@ -55,6 +55,7 @@ from pipeline import run as run_pipeline
 from pipeline.feature_engineer import summarize_rolling_state
 from pipeline.if_detector import reload_artifacts
 from decision_engine.service import run_explanation_task
+from fastapi.middleware.cors import CORSMiddleware
 
 # --------------- logging ----------------------------------
 logging.basicConfig(
@@ -144,6 +145,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================================================
 # HELPERS
