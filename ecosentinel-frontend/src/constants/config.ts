@@ -158,7 +158,7 @@ export const LLM_MODEL_GROUPS: LLMModelGroup[] = [
     group: 'Local (Ollama)',
     models: [
       { value: 'llama3.1:8b',  label: 'Llama 3.1 8B',   available: true },
-      { value: 'gemma2:9b',    label: 'Gemma 2 9B',      available: true },
+      { value: 'gemma4:latest',    label: 'Gemma 4 9B',      available: true },
       { value: 'mistral:7b',   label: 'Mistral 7B',      available: true },
       { value: 'phi3:mini',    label: 'Phi-3 Mini',      available: true },
     ],
