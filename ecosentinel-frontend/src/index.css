@@ -1,0 +1,115 @@
+/* ============================================================
+   index.css
+   Tailwind directives + global base styles for EcoSentinel.
+   Light theme: white / light-grey surfaces, #009E4D brand green.
+   ============================================================ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base resets ──────────────────────────────────────────── */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    color-scheme: light;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    margin: 0;
+    padding: 0;
+    background-color: #F4F6F5;   /* surface.bg */
+    color: #0F1F14;               /* text.primary */
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    overflow: hidden;             /* prevent body scroll — all scroll is inside panels */
+  }
+
+  /* Scrollbar styling — thin, grey-green on light bg */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #F0F2F1;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #D6DED8;
+    border-radius: 2px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #009E4D;
+  }
+
+  /* Firefox */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #D6DED8 #F0F2F1;
+  }
+
+  /* Remove default number input spinners */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+
+  /* Datetime-local colour fix on light background */
+  input[type='datetime-local'] {
+    color-scheme: light;
+  }
+
+  /* Focus ring — brand green */
+  :focus-visible {
+    outline: 2px solid #009E4D;
+    outline-offset: 1px;
+  }
+
+  /* Remove focus ring for mouse users */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* ── Component utilities ─────────────────────────────────── */
+
+@layer components {
+  /* Monospace data values */
+  .data-value {
+    @apply font-mono text-xs text-text-code;
+  }
+
+  /* Section divider */
+  .section-divider {
+    @apply border-t border-surface-border my-3;
+  }
+
+  /* Compact label */
+  .field-label {
+    @apply text-2xs font-mono text-text-muted uppercase tracking-widest;
+  }
+}
+
+/* ── react-json-view-lite overrides ─────────────────────── */
+
+/* Ensure the library doesn't impose its own dark background */
+.rjv-container,
+[class*="container__"] {
+  background: transparent !important;
+}

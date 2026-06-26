@@ -55,6 +55,7 @@ from pipeline import run as run_pipeline
 from pipeline.feature_engineer import summarize_rolling_state
 from pipeline.if_detector import reload_artifacts
 from decision_engine.service import run_explanation_task
+from fastapi.middleware.cors import CORSMiddleware
 
 # --------------- logging ----------------------------------
 logging.basicConfig(
@@ -144,6 +145,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================================================
 # HELPERS
@@ -513,10 +521,9 @@ async def model_info() -> dict:
             detail="Model artifacts not found. Run training/train.py first.",
         )
 
-    schema = joblib.load(schema_path)
-    logger.info(
-        f"/model/info returned feature schema with {len(schema) if hasattr(schema, '__len__') else 'unknown'} item(s)."
-    )
+    raw_schema = joblib.load(schema_path)
+    schema = raw_schema["all_features"] if isinstance(raw_schema, dict) else raw_schema
+    logger.info(f"/model/info returned feature schema with {len(schema)} feature(s).")
 
     from config.settings import DETECTION_CONFIG, ROLLING_WINDOW_SIZE
     return {
