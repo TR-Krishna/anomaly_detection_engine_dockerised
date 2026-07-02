@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fe-deployment
+  namespace: ecosentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fe-deployment
+  template:                 
+    metadata:
+      labels:
+        app: fe-deployment
+    spec:
+      containers:
+        - name: fe-deployment
+          image: krishnatr/ecosentinel-fe:latest 
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+         

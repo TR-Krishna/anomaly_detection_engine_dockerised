@@ -1,0 +1,24 @@
+services:
+  backend:
+    build:
+      context: ./ecosentinel-backend
+      dockerfile: Dockerfile
+    container_name: ecosentinel-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ecosentinel-backend/models:/app/models
+
+  frontend:
+    build:
+      context: ./ecosentinel-frontend
+      dockerfile: Dockerfile
+    container_name: ecosentinel-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5173:5173"

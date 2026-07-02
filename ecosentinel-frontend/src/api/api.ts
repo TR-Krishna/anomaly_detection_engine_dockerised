@@ -14,7 +14,7 @@ import type {
   ModelReloadResponse,
 } from '@/types';
 
-// ── Axios instance ────────────────────────────────────────────
+// ?? Axios instance ????????????????????????????????????????????
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8000';
 
@@ -27,7 +27,7 @@ export const apiClient = axios.create({
   },
 });
 
-// Response interceptor — normalise errors into a consistent shape
+// Response interceptor � normalise errors into a consistent shape
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
@@ -40,7 +40,7 @@ apiClient.interceptors.response.use(
   },
 );
 
-// ── Endpoints ─────────────────────────────────────────────────
+// ?? Endpoints ?????????????????????????????????????????????????
 
 /**
  * POST /detect
@@ -65,7 +65,7 @@ export async function getExplanation(anomalyId: number): Promise<AnomalyExplanat
 
 /**
  * GET /health
- * Service liveness check — returns component statuses.
+ * Service liveness check � returns component statuses.
  */
 export async function getHealth(): Promise<HealthResponse> {
   const { data } = await apiClient.get<HealthResponse>('/health');

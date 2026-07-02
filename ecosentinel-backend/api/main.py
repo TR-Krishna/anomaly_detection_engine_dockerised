@@ -1,27 +1,3 @@
-"""
-api/main.py
------------
-FastAPI application for the meter anomaly detection service.
-
-Endpoints
----------
-POST /detect
-    Main inference endpoint. Accepts one or more raw HES API records,
-    runs the full detection pipeline on each, returns structured results.
-
-GET  /health
-    Liveness check. Returns service status and model load state.
-
-GET  /model/info
-    Returns model artifact metadata (feature schema, thresholds).
-
-POST /model/reload
-    Hot-reloads model artifacts from disk without restarting the service.
-    Use after retraining.
-
-Run with:
-    uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
-"""
 
 import logging
 import os
@@ -73,12 +49,6 @@ def _summarize_layer_flags(result) -> str:
     }
     return ", ".join(f"{name}={value}" for name, value in flags.items())
 
-
-# =========================================================
-# DB — imported conditionally so the API works without
-# a live DB (uses in-memory history fallback).
-# =========================================================
-
 try:
     from db.client import (
         init_schema,
@@ -92,16 +62,11 @@ try:
     _DB_AVAILABLE = True
 except ImportError:
     _DB_AVAILABLE = False
-    logger.warning("psycopg2 not available — running without DB persistence.")
-
-
-# =========================================================
-# LIFESPAN — startup / shutdown
-# =========================================================
+    logger.warning("psycopg2 not available ? running without DB persistence.")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Startup ───────────────────────────────────────────
+    # ?? Startup ???????????????????????????????????????????
     logger.info("Starting meter anomaly detection service ...")
 
     # Pre-load model artifacts (fail fast if missing)
@@ -122,7 +87,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # ── Shutdown ──────────────────────────────────────────
+    # ?? Shutdown ??????????????????????????????????????????
     if _DB_AVAILABLE:
         try:
             close_pool()
@@ -130,10 +95,6 @@ async def lifespan(app: FastAPI):
             pass
     logger.info("Service shut down.")
 
-
-# =========================================================
-# APP
-# =========================================================
 
 app = FastAPI(
     title="Meter Anomaly Detection API",
@@ -149,18 +110,15 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# =========================================================
-# HELPERS
-# =========================================================
-
 def _fetch_history(meter_serial: str, before_timestamp: str) -> list[dict]:
     """
     Fetches the last N readings for a meter from DB.
-    Falls back to an empty list if DB is unavailable —
+    Falls back to an empty list if DB is unavailable ?
     the pipeline handles missing history gracefully (uses
     current reading for rolling stats).
     """
@@ -181,7 +139,7 @@ def _fetch_history(meter_serial: str, before_timestamp: str) -> list[dict]:
 def _persist(record, parsed_interval_ts: str, result) -> Optional[int]:
     """
     Writes raw record, canonical telemetry, and anomaly log
-    to DB. Errors are logged but never bubble up to the caller —
+    to DB. Errors are logged but never bubble up to the caller ?
     persistence failures must not affect detection responses.
 
     Returns
@@ -205,7 +163,7 @@ def _persist(record, parsed_interval_ts: str, result) -> Optional[int]:
             raw_value=record.rawValue,
         )
 
-        # 2. Parsed telemetry — store canonical dict in raw_data
+        # 2. Parsed telemetry ? store canonical dict in raw_data
         if result.features and not result.error:
             canonical_fields = [
                 "energy_consumption", "voltage", "current", "power_factor",
@@ -344,10 +302,10 @@ async def detect(
     Accepts a batch of raw HES API records and runs the full
     three-layer detection pipeline on each:
 
-    1. **Rule-based** — deterministic checks (negative energy,
+    1. **Rule-based** ? deterministic checks (negative energy,
        voltage out of range, invalid power factor, etc.)
-    2. **Z-score** — statistical deviation from rolling baseline
-    3. **Isolation Forest** — multivariate ML anomaly detection
+    2. **Z-score** ? statistical deviation from rolling baseline
+    3. **Isolation Forest** ? multivariate ML anomaly detection
 
     Each record is processed independently. A record is flagged
     as anomalous if **any** layer fires.
@@ -360,7 +318,7 @@ async def detect(
     decision engine is enabled, an LLM explanation is generated
     asynchronously as a background task after this response is
     returned. The response includes `anomaly_id` and
-    `explanation_status: "pending"` — poll
+    `explanation_status: "pending"` ? poll
     `GET /anomalies/{anomaly_id}/explanation` for the result.
     """
     batch_started = perf_counter()
@@ -574,12 +532,12 @@ async def get_anomaly_explanation(anomaly_id: int) -> AnomalyExplanationResponse
     POST /detect returns, so this endpoint may need to be polled.
 
     `explanation_status` values:
-      - "pending"   — LLM call is queued or in progress; poll again shortly
-      - "completed" — `explanation` field is populated
-      - "failed"    — `explanation_error` describes what went wrong;
+      - "pending"   ? LLM call is queued or in progress; poll again shortly
+      - "completed" ? `explanation` field is populated
+      - "failed"    ? `explanation_error` describes what went wrong;
                       the anomaly detection itself is still valid,
                       only the explanation generation failed
-      - null        — decision engine was disabled when this anomaly
+      - null        ? decision engine was disabled when this anomaly
                       was detected; no explanation will be generated
 
     Typical polling interval: 2-5 seconds, depending on LLM provider
@@ -589,7 +547,7 @@ async def get_anomaly_explanation(anomaly_id: int) -> AnomalyExplanationResponse
         logger.warning(f"/anomalies/{anomaly_id}/explanation requested but DB is unavailable.")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database not available — explanations are not persisted without a DB.",
+            detail="Database not available ? explanations are not persisted without a DB.",
         )
 
     row = get_anomaly_by_id(anomaly_id)

@@ -28,7 +28,7 @@
       "description": "Normal reading of SE2303001 at 10:00 after 48h seeded history. All layers should pass: no rule violation, z_score < 3.0, IF scores within normal range.",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "PASS (z ≈ 0.0)",
+        "z_score": "PASS (z ? 0.0)",
         "isolation_forest": "PASS"
       },
       "records": [
@@ -43,10 +43,10 @@
       ]
     },
     "zscore_spike": {
-      "description": "Energy spike to 650 Wh on SE2303062. Rolling baseline ≈ 350 Wh mean, 52 Wh std. z = (650-350)/52 = 5.77, well above threshold of 3.0. Current rises proportionally with the increased load (same physics). Rule layer passes (no voltage/PF violation).",
+      "description": "Energy spike to 650 Wh on SE2303062. Rolling baseline ? 350 Wh mean, 52 Wh std. z = (650-350)/52 = 5.77, well above threshold of 3.0. Current rises proportionally with the increased load (same physics). Rule layer passes (no voltage/PF violation).",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "TRIGGERED (z ≈ 5.77, threshold 3.0)",
+        "z_score": "TRIGGERED (z ? 5.77, threshold 3.0)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -64,7 +64,7 @@
       "description": "Sudden energy drop to 15 Wh on SE2303064. z = (15-350)/52 = -6.44, well below -3.0. Current drops proportionally (minimal load). Could indicate connection fault, disconnection, or tamper. Rule layer passes (positive energy, voltage/PF normal).",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "TRIGGERED (z ≈ -6.44, threshold -3.0)",
+        "z_score": "TRIGGERED (z ? -6.44, threshold -3.0)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -79,10 +79,10 @@
       ]
     },
     "same_hour_deviation": {
-      "description": "Energy 525 Wh on SE2303001. Historical avg same hour ≈ 350 Wh. Deviation = (525-350)/350 = 50%, above the 40% threshold. z = (525-350)/52 = 3.37, also above z-score threshold. Both statistical triggers fire. Rule layer passes.",
+      "description": "Energy 525 Wh on SE2303001. Historical avg same hour ? 350 Wh. Deviation = (525-350)/350 = 50%, above the 40% threshold. z = (525-350)/52 = 3.37, also above z-score threshold. Both statistical triggers fire. Rule layer passes.",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "TRIGGERED (z ≈ 3.37 AND same_hour_deviation = 50% > 40%)",
+        "z_score": "TRIGGERED (z ? 3.37 AND same_hour_deviation = 50% > 40%)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -171,7 +171,7 @@
     "power_factor_collapse": {
       "description": "PF collapse to 0.65 on SE2303064. pf_min in settings.py = 0.0, so rule layer does NOT fire (0.65 > 0.0). This is purely an Isolation Forest / statistical anomaly. Active energy is unchanged (350 Wh); apparent energy rises to 538.5 VAh (S = P/PF = 700/0.65). Current rises to 4.69 A due to increased reactive component. The unusual E/I/PF combination is what the IF model detects.",
       "expected_layer_result": {
-        "rule_based": "PASS (pf_min=0.0, pf_max=1.0 in settings.py — 0.65 is within bounds)",
+        "rule_based": "PASS (pf_min=0.0, pf_max=1.0 in settings.py ? 0.65 is within bounds)",
         "z_score": "PASS (energy unchanged, current z-score may trigger depending on current rolling std)",
         "isolation_forest": "LIKELY TRIGGERED (trained on pf_collapse anomaly type at 0.55-0.72 range)"
       },
@@ -191,7 +191,7 @@
       "expected_layer_result": {
         "rule_based": "PASS (energy is positive, no voltage/PF violation)",
         "z_score": "TRIGGERED (z = (105-350)/52 = -4.7 on energy)",
-        "isolation_forest": "LIKELY TRIGGERED (tamper_bypass in training data — low E + full I pattern)"
+        "isolation_forest": "LIKELY TRIGGERED (tamper_bypass in training data ? low E + full I pattern)"
       },
       "records": [
         {
@@ -269,7 +269,7 @@
       ]
     },
     "current_spike": {
-      "description": "Current spike to 11.59 A on A32600225 (3.5× normal 3.31 A). Voltage sags due to droop: V = 230 - 11.59*0.05 = 229.42 V. z_current = (11.59-3.31)/0.5 >> 3.0. Consistent with a sudden large inductive load connection.",
+      "description": "Current spike to 11.59 A on A32600225 (3.5? normal 3.31 A). Voltage sags due to droop: V = 230 - 11.59*0.05 = 229.42 V. z_current = (11.59-3.31)/0.5 >> 3.0. Consistent with a sudden large inductive load connection.",
       "expected_layer_result": {
         "rule_based": "PASS (voltage 229.4 V is within 180-270 V bounds)",
         "z_score": "TRIGGERED (current z >> 3.0)",
@@ -336,7 +336,7 @@
       "description": "Energy spike to 650 Wh on SE000022. z = (650-350)/52 = 5.77, well above 3.0 threshold.",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "TRIGGERED (z ≈ 5.77)",
+        "z_score": "TRIGGERED (z ? 5.77)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -398,10 +398,10 @@
       ]
     },
     "energy_spike_with_voltage_sag": {
-      "description": "Combined anomaly on SE0000011: energy spike to 650 Wh (z ≈ 5.77) AND voltage sag to 165 V. Apparent energy rises proportionally with the spike (706.5 VAh). The voltage sag triggers rule layer independently. This payload tests two simultaneous anomaly signals.",
+      "description": "Combined anomaly on SE0000011: energy spike to 650 Wh (z ? 5.77) AND voltage sag to 165 V. Apparent energy rises proportionally with the spike (706.5 VAh). The voltage sag triggers rule layer independently. This payload tests two simultaneous anomaly signals.",
       "expected_layer_result": {
         "rule_based": "TRIGGERED (VOLTAGE_SAG: 165 V < 180 V)",
-        "z_score": "TRIGGERED (energy z ≈ 5.77)",
+        "z_score": "TRIGGERED (energy z ? 5.77)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -446,7 +446,7 @@
       "description": "Correlated energy+current spike on SE2104744. Energy to 650 Wh, current to 6.15 A (both rise proportionally as they should for a real load increase). z-score on energy = 5.77. The correlated rise across both features makes the IF more confident.",
       "expected_layer_result": {
         "rule_based": "PASS",
-        "z_score": "TRIGGERED (energy z ≈ 5.77)",
+        "z_score": "TRIGGERED (energy z ? 5.77)",
         "isolation_forest": "LIKELY TRIGGERED"
       },
       "records": [
@@ -472,7 +472,7 @@
       "voltage_v": "229.83 V",
       "current_a": "3.311 A",
       "power_factor": 0.92,
-      "frequency_hz": "50.0 ± 0.04 Hz"
+      "frequency_hz": "50.0 ? 0.04 Hz"
     },
     "normal": {
       "description": "Normal full-feature reading of M1GEMAC1 after seeded history.",
@@ -515,7 +515,8 @@
   "batch_request_example": {
     "description": "Example batch POST /detect with one normal + one energy spike + one voltage sag across three group_A meters. All seeded before '2026-06-18 12:00:00' to use different timestamps.",
     "seeding_note": "If using 12:00 timestamps, re-seed with --before '2026-06-18 12:00:00'. At 12:00 weekday, diurnal load = 0.60 kW -> E = 300 Wh. Adjust or keep --before '2026-06-18 10:00:00' and ensure batch timestamps are after 10:00.",
-    "curl_command": "curl -X POST http://localhost:8000/detect -H 'Content-Type: application/json' -d @batch_payload.json",
+    "curl_command": "curl -X POST http://localhost:
+      /detect -H 'Content-Type: application/json' -d @batch_payload.json",
     "payload": {
       "records": [
         {
@@ -583,7 +584,7 @@
         "note":              "PF collapse to 0.65 does NOT trigger rule layer (pf_min=0.0 in settings.py). It is a purely ML/statistical anomaly."
       },
       "z_score": "|(reading - rolling_mean) / rolling_std| > 3.0  OR  |(reading - hist_avg_same_hour) / hist_avg_same_hour| > 0.40",
-      "isolation_forest": "Complex multivariate anomalies — trained on all 8 anomaly types in generate_dataset.py at correct Wh scale"
+      "isolation_forest": "Complex multivariate anomalies ? trained on all 8 anomaly types in generate_dataset.py at correct Wh scale"
     },
     "curl_examples": [
       "Single normal (should pass all layers): curl -X POST http://localhost:8000/detect -H 'Content-Type: application/json' -d '{\"records\": [{\"id\": 50001, \"meterSerial\": \"SE2303001\", \"timestamp\": \"2026-06-18T10:00:00+00:00\", \"obisCode\": \"1.0.99.1.0.255\", \"entryId\": 1, \"rawValue\": \"1,0.0.1.0.0.255,2,2026-06-18 10:00:00,|2,1.0.12.27.0.255,2,229.8,V|3,1.0.1.29.0.255,2,350.0,Wh|4,1.0.11.27.0.255,2,3.31,A|5,1.0.13.27.0.255,2,0.92,\"}]}'",

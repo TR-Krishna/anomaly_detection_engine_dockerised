@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: be-deployment
+  namespace: ecosentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:                 
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend
+          image: krishnatr/ecosentinel-be:latest 
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+         
