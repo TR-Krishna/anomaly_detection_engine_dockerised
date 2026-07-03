@@ -16,7 +16,8 @@ export default defineConfig({
       // Only active when VITE_API_BASE_URL is not set.
       // If VITE_API_BASE_URL is set, axios uses it directly.
       '/api-proxy': {
-        target: 'http://localhost:8000',
+            // target: 'http:localhost:8000',
+        target: 'http://be-service.ecosentinel.svc.cluster.local:80',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-proxy/, ''),
       },
