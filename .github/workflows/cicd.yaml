@@ -35,6 +35,8 @@ jobs:
            file: ./ecosentinel-backend/Dockerfile
            push: true
            tags: krishnatr/ecosentinel-be:latest  
+           cache-from: type=gha
+           cache-to: type=gha,mode=max
 
       - name: Build and Push Frontend 
         uses: docker/build-push-action@v5
@@ -42,7 +44,9 @@ jobs:
            context: ./ecosentinel-frontend
            file: ./ecosentinel-frontend/Dockerfile
            push: true
-           tags: krishnatr/ecosentinel-fe:latest  
+           tags: krishnatr/ecosentinel-fe:latest 
+           cache-from: type=gha
+           cache-to: type=gha,mode=max
 
      
   
