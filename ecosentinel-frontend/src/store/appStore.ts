@@ -1,7 +1,7 @@
 // ============================================================
 // store/appStore.ts
 // Single Zustand store. All global UI and domain state lives here.
-// Components destructure only what they need — Zustand's selector
+// Components destructure only what they need � Zustand's selector
 // subscriptions prevent unnecessary re-renders.
 // ============================================================
 
@@ -23,15 +23,15 @@ import { LLM_MODEL_GROUPS } from '@/constants/config';
 // Default LLM model is the first available Ollama model
 const DEFAULT_LLM_MODEL = LLM_MODEL_GROUPS[0].models[0].value;
 
-// ── State shape ───────────────────────────────────────────────
+// ?? State shape ???????????????????????????????????????????????
 
 interface AppState {
-  // ── Global UI preferences (persisted to localStorage) ──────
+  // ?? Global UI preferences (persisted to localStorage) ??????
   viewMode:               ViewMode;
   decisionEngineEnabled:  boolean;
   selectedLLMModel:       string;
 
-  // ── Detection slice ─────────────────────────────────────────
+  // ?? Detection slice ?????????????????????????????????????????
   detection: {
     lastRequest:       DetectRequest | null;
     lastResponse:      DetectBatchResponse | null;
@@ -41,7 +41,7 @@ interface AppState {
     sessionAnomalyIds: number[];   // collected across all detect runs
   };
 
-  // ── Explanation slice ────────────────────────────────────────
+  // ?? Explanation slice ????????????????????????????????????????
   explanation: {
     inputAnomalyId:   string;                          // controlled input
     response:         AnomalyExplanationResponse | null;
@@ -53,11 +53,11 @@ interface AppState {
     error:            string | null;
   };
 
-  // ── Form state (non-technical detection input) ───────────────
+  // ?? Form state (non-technical detection input) ???????????????
   meterForm: MeterFormState;
 }
 
-// ── Actions ───────────────────────────────────────────────────
+// ?? Actions ???????????????????????????????????????????????????
 
 interface AppActions {
   // Global
@@ -94,7 +94,7 @@ interface AppActions {
   setMeterFormAdvanced:   (field: keyof MeterFormState['advanced'], value: string) => void;
 }
 
-// ── Initial state factories ───────────────────────────────────
+// ?? Initial state factories ???????????????????????????????????
 
 const initialDetection: AppState['detection'] = {
   lastRequest:       null,
@@ -128,12 +128,12 @@ const initialMeterForm: MeterFormState = {
   },
 };
 
-// ── Store ─────────────────────────────────────────────────────
+// ?? Store ?????????????????????????????????????????????????????
 
 export const useAppStore = create<AppState & AppActions>()(
   persist(
     immer((set) => ({
-      // ── Initial state ──────────────────────────────────────
+      // ?? Initial state ??????????????????????????????????????
       viewMode:              'technical',
       decisionEngineEnabled: true,
       selectedLLMModel:      DEFAULT_LLM_MODEL,
@@ -141,12 +141,12 @@ export const useAppStore = create<AppState & AppActions>()(
       explanation:           initialExplanation,
       meterForm:             initialMeterForm,
 
-      // ── Global actions ──────────────────────────────────────
+      // ?? Global actions ??????????????????????????????????????
       setViewMode: (mode) => set((s) => { s.viewMode = mode; }),
       setDecisionEngineEnabled: (enabled) => set((s) => { s.decisionEngineEnabled = enabled; }),
       setSelectedLLMModel: (model) => set((s) => { s.selectedLLMModel = model; }),
 
-      // ── Detection actions ───────────────────────────────────
+      // ?? Detection actions ???????????????????????????????????
       setDetectionLoading: (loading) => set((s) => { s.detection.isLoading = loading; }),
       setDetectionRequest: (req)     => set((s) => { s.detection.lastRequest = req; }),
       setDetectionResponse: (res)    => set((s) => {
@@ -173,7 +173,7 @@ export const useAppStore = create<AppState & AppActions>()(
         }
       }),
 
-      // ── Explanation actions ──────────────────────────────────
+      // ?? Explanation actions ??????????????????????????????????
       setExplanationInputId: (id)   => set((s) => { s.explanation.inputAnomalyId = id; }),
       setExplanationLoading: (l)    => set((s) => { s.explanation.isLoading = l; }),
       setExplanationPolling: (p)    => set((s) => { s.explanation.isPolling = p; }),
@@ -190,14 +190,14 @@ export const useAppStore = create<AppState & AppActions>()(
         s.explanation = { ...initialExplanation, inputAnomalyId: s.explanation.inputAnomalyId };
       }),
 
-      // ── Meter form actions ──────────────────────────────────
+      // ?? Meter form actions ??????????????????????????????????
       setMeterFormField: (field, value) => set((s) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (s.meterForm as any)[field] = value;
       }),
       setMeterFormGroup: (group, features) => set((s) => {
         s.meterForm.selectedGroup = group;
-        // Reset field values when group changes — keep only overlapping fields
+        // Reset field values when group changes � keep only overlapping fields
         const next: Record<string, string> = {};
         features.forEach((f) => {
           next[f] = s.meterForm.fieldValues[f] ?? '';
