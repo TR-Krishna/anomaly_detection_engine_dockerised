@@ -59,10 +59,10 @@ jobs:
           docker compsoe up -d
           docker compose ps
 
-      - name : Deploy to Kubernetes
-        run: | 
-          kubectl rollout restart deployment be-deployment -n ecosentinel
-          kubectl rollout restart deployment fe-deployment -n ecosentinel
-          kubectl rollout status deployment be-deployment -n ecosentinel
-          kubectl rollout status deployment fe-deployment -n ecosentinel
+      # - name : Deploy to Kubernetes
+      #   run: | 
+      #     kubectl rollout restart deployment be-deployment -n ecosentinel
+      #     kubectl rollout restart deployment fe-deployment -n ecosentinel
+      #     kubectl rollout status deployment be-deployment -n ecosentinel
+      #     kubectl rollout status deployment fe-deployment -n ecosentinel
       

@@ -10,6 +10,8 @@ services:
     depends_on: 
       database : 
         condition: service_healthy
+      ollama:
+        condition: service_started
     environment:
       # DATABASE_URL: postgresql://postgres:meter_pass@ecosentinel-database:5432/meter_anomaly
         DB_HOST: ecosentinel-database
@@ -17,6 +19,10 @@ services:
         DB_NAME: meter_anomaly
         DB_USER: postgres
         DB_PASSWORD: meter_pass
+        LLM_PROVIDER: ollama
+        LLM_MODEL: llama3.1:8b
+        LLM_API_BASE: http://ecosentinel-ollama:11434
+        DECISION_ENGINE_ENABLED: "true"
     volumes:
       - ./ecosentinel-backend/models:/app/models
 
@@ -50,3 +56,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ecosentinel-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - C:/Users/SESA845697/.ollama:/root/.ollama
