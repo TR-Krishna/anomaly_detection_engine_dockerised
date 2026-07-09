@@ -7,6 +7,16 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    depends_on: 
+      database : 
+        condition: service_healthy
+    environment:
+      # DATABASE_URL: postgresql://postgres:meter_pass@ecosentinel-database:5432/meter_anomaly
+        DB_HOST: ecosentinel-database
+        DB_PORT: "5432"
+        DB_NAME: meter_anomaly
+        DB_USER: postgres
+        DB_PASSWORD: meter_pass
     volumes:
       - ./ecosentinel-backend/models:/app/models
 
@@ -22,3 +32,21 @@ services:
       VITE_API_BASE_URL: http://localhost:8000
     ports:
       - "5173:5173"
+  
+  database:
+    image: postgres:13
+    container_name: ecosentinel-database
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: meter_pass
+      POSTGRES_DB: meter_anomaly
+    ports:
+       - "5433:5432"
+    volumes:
+        - ./ecosentinel-database/data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
