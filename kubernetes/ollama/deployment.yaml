@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment  
+metadata:
+  name: ollama-deployment
+  namespace: ecosentinel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: krishnatr/ecosentinel-ollama:llama3.1-8b
+          ports:
+            - containerPort: 11434
+          resources:
+            requests:
+              memory: "6Gi"
+              cpu: "2"
+            limits:
+              memory: "14Gi"
+              cpu: "4"
+                
